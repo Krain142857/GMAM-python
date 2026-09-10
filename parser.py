@@ -3,8 +3,9 @@
 from typing import List, Optional, Tuple
 
 from .ast import (
-    Composite, Conditional, Equality, Interval, MacroCall, NumberLiteral,
+    BinaryExpression, Composite, Conditional, Equality, Interval, MacroCall, NumberLiteral,
     MacroDefinition, Program, RawString, Step, Variable, VariableDefinition,
+    UnaryExpression,
 )
 from .errors import CompileError
 from .tokens import Lexer, Token
@@ -97,23 +98,66 @@ class Parser:
         return expressions
 
     def _expr(self):
-        expression = self._expr_equality()
+        return self._expr_interval()
+
+    def _expr_interval(self):
+        expression = self._expr_condition()
         if self._accept("COLON"):
-            difference = self._expr_equality()
+            difference = self._expr_condition()
             self._expect("COLON")
-            end = self._expr_equality()
-            expression = Interval(expression, difference, end, bool(self._accept("INCLUDEEND")), expression.location)
+            end = self._expr_condition()
+            return Interval(
+                expression,
+                difference,
+                end,
+                bool(self._accept("INCLUDEEND")),
+                expression.location,
+            )
+        return expression
+
+    def _expr_condition(self):
+        expression = self._expr_equality()
+        if self._accept("QUESTION"):
+            # The first colon after the true branch belongs to this conditional.
+            true_branch = self._expr_equality()
+            self._expect("COLON")
+            return Conditional(expression, true_branch, self._expr_condition(), expression.location)
         return expression
 
     def _expr_equality(self):
-        expression = self._expr_primary()
-        if self._accept("EQU"):
-            expression = Equality(expression, self._expr_primary(), expression.location)
-        if self._accept("QUESTION"):
-            true_branch = self._expr_primary()
-            self._expect("COLON")
-            expression = Conditional(expression, true_branch, self._expr_primary(), expression.location)
+        expression = self._expr_additive()
+        while self._accept("EQU"):
+            expression = Equality(expression, self._expr_additive(), expression.location)
         return expression
+
+    def _expr_additive(self):
+        expression = self._expr_multiplicative()
+        while self.current.kind in ("PLUS", "MINUS") and self._can_continue_arithmetic(expression):
+            operator = self.current.value
+            self.index += 1
+            expression = BinaryExpression(expression, operator, self._expr_multiplicative(), expression.location)
+        return expression
+
+    @staticmethod
+    def _can_continue_arithmetic(expression):
+        # Raw strings and composites delimit adjacent expressions in a step.
+        return not isinstance(expression, (RawString, Composite))
+
+    def _expr_multiplicative(self):
+        expression = self._expr_unary()
+        operators = {"MUL", "SLASH", "DIV", "MOD"}
+        while self.current.kind in operators:
+            operator = self.current.value
+            self.index += 1
+            expression = BinaryExpression(expression, operator, self._expr_unary(), expression.location)
+        return expression
+
+    def _expr_unary(self):
+        if self.current.kind in ("PLUS", "MINUS"):
+            token = self.current
+            self.index += 1
+            return UnaryExpression(token.value, self._expr_unary(), token.location)
+        return self._expr_primary()
 
     def _expr_primary(self):
         token = self.current

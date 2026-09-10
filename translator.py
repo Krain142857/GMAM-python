@@ -4,8 +4,9 @@ from decimal import Decimal, ROUND_HALF_UP
 from typing import Dict, Optional, Sequence
 
 from .ast import (
-    Composite, Conditional, Equality, Expr, Interval, MacroCall, NumberLiteral,
+    BinaryExpression, Composite, Conditional, Equality, Expr, Interval, MacroCall, NumberLiteral,
     MacroDefinition, Program, RawString, Value, Variable, VariableDefinition,
+    UnaryExpression,
 )
 from .errors import CompileError
 
@@ -53,9 +54,13 @@ class Translator:
 
     def _positions(self, value: Value, location: object) -> Sequence[float]:
         if value.kind == "number":
+            if not self._is_integer(value.value):
+                self._error("step position must evaluate to an integer", location)
             return [value.value]
         if value.kind == "interval":
             begin, difference, end, include_end = value.value
+            if not all(self._is_integer(item) for item in (begin, difference, end)):
+                self._error("interval bounds and difference must evaluate to integers", location)
             if difference == 0:
                 self._error("interval difference cannot be zero", location)
             positions = []
@@ -65,7 +70,7 @@ class Translator:
                     break
                 positions.append(current)
                 current += difference
-            return positions
+            return [int(position) for position in positions]
         self._error("step position must be a number or interval", location)
 
     def _evaluate(self, expression: Optional[Expr], local: Optional[Dict[str, Value]] = None) -> Value:
@@ -74,6 +79,11 @@ class Translator:
         local = local or {}
         if isinstance(expression, NumberLiteral):
             return Value("number", expression.value)
+        if isinstance(expression, UnaryExpression):
+            operand = self._evaluate(expression.operand, local)
+            if operand.kind != "number":
+                self._error("unary operators require a number", expression.location)
+            return Value("number", operand.value if expression.operator == "+" else -operand.value)
         if isinstance(expression, RawString):
             return Value("string", expression.value)
         if isinstance(expression, Variable):
@@ -92,6 +102,8 @@ class Translator:
             if any(item.kind != "number" for item in values):
                 self._error("interval bounds must be numbers", expression.location)
             return Value("interval", (values[0].value, values[1].value, values[2].value, expression.include_end))
+        if isinstance(expression, BinaryExpression):
+            return self._evaluate_binary(expression, local)
         if isinstance(expression, Equality):
             left, right = self._evaluate(expression.left, local), self._evaluate(expression.right, local)
             if left.kind not in ("string", "number") or right.kind not in ("string", "number"):
@@ -149,6 +161,35 @@ class Translator:
     @staticmethod
     def _error(message: str, location) -> None:
         raise CompileError(message, location.line, location.column)
+
+    def _evaluate_binary(self, expression: BinaryExpression, local: Dict[str, Value]) -> Value:
+        left = self._evaluate(expression.left, local)
+        right = self._evaluate(expression.right, local)
+        if left.kind != "number" or right.kind != "number":
+            self._error("arithmetic operators require numbers", expression.location)
+        operator = expression.operator
+        if operator in ("/", "div", "mod") and right.value == 0:
+            self._error("division by zero", expression.right.location)
+        if operator == "+":
+            result = left.value + right.value
+        elif operator == "-":
+            result = left.value - right.value
+        elif operator == "*":
+            result = left.value * right.value
+        elif operator == "/":
+            result = left.value / right.value
+        elif operator in ("div", "mod"):
+            if not self._is_integer(left.value) or not self._is_integer(right.value):
+                self._error(f"{operator} requires integer operands", expression.location)
+            quotient = int(left.value / right.value)
+            result = quotient if operator == "div" else left.value - quotient * right.value
+        else:
+            self._error(f"unsupported arithmetic operator {operator}", expression.location)
+        return Value("number", result)
+
+    @staticmethod
+    def _is_integer(value: object) -> bool:
+        return isinstance(value, (int, float)) and float(value).is_integer()
 
     @staticmethod
     def _format_value(value: Value) -> str:

@@ -23,6 +23,21 @@ class NumberLiteral(Expr):
 
 
 @dataclass
+class UnaryExpression(Expr):
+    operator: str
+    operand: Expr
+    location: Location
+
+
+@dataclass
+class BinaryExpression(Expr):
+    left: Expr
+    operator: str
+    right: Expr
+    location: Location
+
+
+@dataclass
 class Variable(Expr):
     name: str
     location: Location

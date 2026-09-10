@@ -20,7 +20,7 @@ class Token:
 
 
 class Lexer:
-    _keywords = {"def": "DEF"}
+    _keywords = {"def": "DEF", "div": "DIV", "mod": "MOD"}
 
     def __init__(self, source: str):
         self.source = source
@@ -113,6 +113,7 @@ class Lexer:
                 "{": "LBRACE", "}": "RBRACE", "[": "LBRACK", "]": "RBRACK",
                 ";": "SEMICOLON", ",": "COMMA", ":": "COLON", "=": "ASSIGN",
                 "?": "QUESTION", "(": "LPAREN", ")": "RPAREN", "@": "AT",
+                "+": "PLUS", "-": "MINUS", "*": "MUL", "/": "SLASH",
             }.get(rest[0])
             if kind:
                 self._advance(rest[0])
