@@ -65,9 +65,7 @@ class Translator:
             return Value("number", expression.value)
         if isinstance(expression, UnaryExpression):
             operand = self._evaluate(expression.operand, local)
-            if operand.kind != "number":
-                self._error("unary operators require a number", expression.location)
-            return Value("number", operand.value if expression.operator == "+" else -operand.value)
+            return self._apply_unary_value(operand, expression.operator, expression.location)
         if isinstance(expression, RawString):
             return Value("string", expression.value)
         if isinstance(expression, Variable):
@@ -176,11 +174,60 @@ class Translator:
     def _evaluate_binary(self, expression: BinaryExpression, local: Dict[str, Value]) -> Value:
         left = self._evaluate(expression.left, local)
         right = self._evaluate(expression.right, local)
+        return self._apply_binary_values(
+            left,
+            right,
+            expression.operator,
+            expression.location,
+            expression.right.location,
+        )
+
+    def _apply_unary_value(self, value: Value, operator: str, location) -> Value:
+        if operator == "flat":
+            if value.kind != "list":
+                self._error("flat requires a list", location)
+            return Value("list", self._flatten(value.value))
+        if value.kind == "list":
+            return Value("list", [
+                self._apply_unary_value(item, operator, location)
+                for item in value.value
+            ])
+        if value.kind != "number":
+            self._error("unary operators require numbers or lists of numbers", location)
+        if operator == "+":
+            return value
+        if operator == "-":
+            return Value("number", -value.value)
+        self._error(f"unsupported unary operator {operator}", location)
+
+    def _apply_binary_values(self, left: Value, right: Value, operator: str, location, right_location) -> Value:
+        if operator == "rep":
+            if left.kind != "list" or right.kind != "number":
+                self._error("rep requires a list and a natural number", location)
+            if not self._is_integer(right.value) or right.value < 0:
+                self._error("rep count must be a natural number", right_location)
+            return Value("list", left.value * int(right.value))
+        if left.kind == "list" and right.kind == "list":
+            if len(left.value) != len(right.value):
+                self._error("arithmetic list operands must have equal length", location)
+            return Value("list", [
+                self._apply_binary_values(item_left, item_right, operator, location, right_location)
+                for item_left, item_right in zip(left.value, right.value)
+            ])
+        if left.kind == "list":
+            return Value("list", [
+                self._apply_binary_values(item, right, operator, location, right_location)
+                for item in left.value
+            ])
+        if right.kind == "list":
+            return Value("list", [
+                self._apply_binary_values(left, item, operator, location, right_location)
+                for item in right.value
+            ])
         if left.kind != "number" or right.kind != "number":
-            self._error("arithmetic operators require numbers", expression.location)
-        operator = expression.operator
+            self._error("arithmetic operators require numbers or lists of numbers", location)
         if operator in ("/", "div", "mod") and right.value == 0:
-            self._error("division by zero", expression.right.location)
+            self._error("division by zero", right_location)
         if operator == "+":
             result = left.value + right.value
         elif operator == "-":
@@ -191,11 +238,11 @@ class Translator:
             result = left.value / right.value
         elif operator in ("div", "mod"):
             if not self._is_integer(left.value) or not self._is_integer(right.value):
-                self._error(f"{operator} requires integer operands", expression.location)
+                self._error(f"{operator} requires integer operands", location)
             quotient = int(left.value / right.value)
             result = quotient if operator == "div" else left.value - quotient * right.value
         else:
-            self._error(f"unsupported arithmetic operator {operator}", expression.location)
+            self._error(f"unsupported arithmetic operator {operator}", location)
         return Value("number", result)
 
     def _expand_interval(self, begin, difference, end, include_end, location) -> list[Value]:

@@ -24,6 +24,8 @@ class Lexer:
         "def": "DEF",
         "div": "DIV",
         "mod": "MOD",
+        "rep": "REP",
+        "flat": "FLAT",
         "for": "FOR",
         "in": "IN",
         "do": "DO",

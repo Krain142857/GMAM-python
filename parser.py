@@ -156,20 +156,15 @@ class Parser:
 
     def _expr_additive(self):
         expression = self._expr_multiplicative()
-        while self.current.kind in ("PLUS", "MINUS") and self._can_continue_arithmetic(expression):
+        while self.current.kind in ("PLUS", "MINUS"):
             operator = self.current.value
             self.index += 1
             expression = BinaryExpression(expression, operator, self._expr_multiplicative(), expression.location)
         return expression
 
-    @staticmethod
-    def _can_continue_arithmetic(expression):
-        # Raw strings and composites delimit adjacent expressions in a step.
-        return not isinstance(expression, (RawString, Composite))
-
     def _expr_multiplicative(self):
         expression = self._expr_unary()
-        operators = {"MUL", "SLASH", "DIV", "MOD"}
+        operators = {"MUL", "SLASH", "DIV", "MOD", "REP"}
         while self.current.kind in operators:
             operator = self.current.value
             self.index += 1
@@ -177,6 +172,9 @@ class Parser:
         return expression
 
     def _expr_unary(self):
+        token = self._accept("FLAT")
+        if token:
+            return UnaryExpression("flat", self._expr_unary(), token.location)
         if self.current.kind in ("PLUS", "MINUS"):
             token = self.current
             self.index += 1
