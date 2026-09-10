@@ -1,11 +1,12 @@
 """Semantic evaluation and timeline translation."""
 
 from decimal import Decimal, ROUND_HALF_UP
-from typing import Dict, Optional, Sequence
+from typing import Dict, Optional
 
 from .ast import (
-    BinaryExpression, Composite, Conditional, Equality, Expr, Interval, MacroCall, NumberLiteral,
-    MacroDefinition, Program, RawString, Value, Variable, VariableDefinition,
+    BinaryExpression, Composite, Conditional, Equality, Expr, ForExpression, Interval,
+    MacroCall, NumberLiteral, MacroDefinition, Program, RawString, Value, Variable,
+    VariableDefinition,
     UnaryExpression,
 )
 from .errors import CompileError
@@ -15,7 +16,7 @@ class Translator:
     def __init__(self):
         self.variables: Dict[str, Value] = {}
         self.macros: Dict[str, MacroDefinition] = {}
-        self.timeline: Dict[float, list[str]] = {}
+        self.timeline: Dict[int, list[str]] = {}
         self._macro_stack = []
 
     def translate(self, program: Program) -> Dict[int, list[str]]:
@@ -31,13 +32,17 @@ class Translator:
                 self.macros[declaration.name] = declaration
             else:
                 content = self._evaluate(declaration.content)
-                if content.kind not in ("string", "number"):
-                    self._error("step content must be a string", declaration.location)
-                for position in declaration.positions:
-                    value = self._evaluate(position)
-                    for frame in self._positions(value, position.location):
-                        frame = self._normalize_number(frame)
-                        self.timeline.setdefault(frame, []).append(self._format_value(content))
+                if content.kind != "list":
+                    self._error("step content must be a composite list", declaration.location)
+                positions = self._evaluate(declaration.positions)
+                if positions.kind != "list":
+                    self._error("step positions must be a composite list", declaration.location)
+                content_text = "".join(
+                    self._format_value(value) for value in self._flatten(content.value)
+                )
+                for value in self._flatten(positions.value):
+                    frame = self._moment(value, declaration.positions.location)
+                    self.timeline.setdefault(frame, []).append(content_text)
         return self.timeline
 
     def _validate_parameters(self, macro):
@@ -51,27 +56,6 @@ class Translator:
                 seen_default = True
             elif seen_default:
                 self._error("required parameter follows a default parameter", parameter.location)
-
-    def _positions(self, value: Value, location: object) -> Sequence[float]:
-        if value.kind == "number":
-            if not self._is_integer(value.value):
-                self._error("step position must evaluate to an integer", location)
-            return [value.value]
-        if value.kind == "interval":
-            begin, difference, end, include_end = value.value
-            if not all(self._is_integer(item) for item in (begin, difference, end)):
-                self._error("interval bounds and difference must evaluate to integers", location)
-            if difference == 0:
-                self._error("interval difference cannot be zero", location)
-            positions = []
-            current = begin
-            while (current <= end if difference > 0 else current >= end):
-                if current == end and not include_end:
-                    break
-                positions.append(current)
-                current += difference
-            return [int(position) for position in positions]
-        self._error("step position must be a number or interval", location)
 
     def _evaluate(self, expression: Optional[Expr], local: Optional[Dict[str, Value]] = None) -> Value:
         if expression is None:
@@ -93,15 +77,42 @@ class Translator:
                 return self.variables[expression.name]
             self._error(f"undefined identifier {expression.name}", expression.location)
         if isinstance(expression, Composite):
-            parts = [self._evaluate(item, local) for item in expression.expressions]
-            if any(item.kind not in ("string", "number") for item in parts):
-                self._error("only strings and numbers can be concatenated", expression.location)
-            return Value("string", "".join(self._format_value(item) for item in parts))
+            return Value("list", [self._evaluate(item, local) for item in expression.expressions])
+        if isinstance(expression, ForExpression):
+            sources = []
+            names = set()
+            for binding in expression.bindings:
+                if binding.name in names:
+                    self._error("for binding identifier is duplicated", binding.location)
+                names.add(binding.name)
+                source = self._evaluate(binding.source, local)
+                if source.kind != "list":
+                    self._error("for source must evaluate to a list", binding.location)
+                sources.append(self._flatten(source.value))
+            lengths = {len(source) for source in sources}
+            if len(lengths) > 1:
+                self._error("for source lists must have equal length", expression.location)
+            results = []
+            for index in range(len(sources[0])):
+                bindings = dict(local)
+                for binding, source in zip(expression.bindings, sources):
+                    bindings[binding.name] = source[index]
+                body = self._evaluate(expression.body, bindings)
+                if body.kind != "list":
+                    self._error("for body must evaluate to a list", expression.body.location)
+                results.extend(body.value)
+            return Value("list", results)
         if isinstance(expression, Interval):
             values = [self._evaluate(item, local) for item in (expression.begin, expression.difference, expression.end)]
             if any(item.kind != "number" for item in values):
                 self._error("interval bounds must be numbers", expression.location)
-            return Value("interval", (values[0].value, values[1].value, values[2].value, expression.include_end))
+            return Value("list", self._expand_interval(
+                values[0].value,
+                values[1].value,
+                values[2].value,
+                expression.include_end,
+                expression.location,
+            ))
         if isinstance(expression, BinaryExpression):
             return self._evaluate_binary(expression, local)
         if isinstance(expression, Equality):
@@ -187,6 +198,33 @@ class Translator:
             self._error(f"unsupported arithmetic operator {operator}", expression.location)
         return Value("number", result)
 
+    def _expand_interval(self, begin, difference, end, include_end, location) -> list[Value]:
+        if difference == 0:
+            self._error("interval difference cannot be zero", location)
+        values = []
+        current = begin
+        while (current <= end if difference > 0 else current >= end):
+            if current == end and not include_end:
+                break
+            values.append(Value("number", current))
+            current += difference
+        return values
+
+    def _moment(self, value: Value, location) -> int:
+        if value.kind != "number" or not self._is_integer(value.value) or value.value < 0:
+            self._error("step position must evaluate to a natural number", location)
+        return int(value.value)
+
+    @staticmethod
+    def _flatten(values) -> list[Value]:
+        flattened = []
+        for value in values:
+            if value.kind == "list":
+                flattened.extend(Translator._flatten(value.value))
+            else:
+                flattened.append(value)
+        return flattened
+
     @staticmethod
     def _is_integer(value: object) -> bool:
         return isinstance(value, (int, float)) and float(value).is_integer()
@@ -201,10 +239,3 @@ class Translator:
     @staticmethod
     def _rounded_number(value: float) -> Decimal:
         return Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-
-    @staticmethod
-    def _normalize_number(value: float) -> float:
-        rounded = Translator._rounded_number(value)
-        if rounded == rounded.to_integral():
-            return int(rounded)
-        return float(rounded)

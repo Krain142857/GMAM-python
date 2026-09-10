@@ -20,7 +20,14 @@ class Token:
 
 
 class Lexer:
-    _keywords = {"def": "DEF", "div": "DIV", "mod": "MOD"}
+    _keywords = {
+        "def": "DEF",
+        "div": "DIV",
+        "mod": "MOD",
+        "for": "FOR",
+        "in": "IN",
+        "do": "DO",
+    }
 
     def __init__(self, source: str):
         self.source = source

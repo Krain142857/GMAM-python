@@ -3,8 +3,9 @@
 from typing import List, Optional, Tuple
 
 from .ast import (
-    BinaryExpression, Composite, Conditional, Equality, Interval, MacroCall, NumberLiteral,
-    MacroDefinition, Program, RawString, Step, Variable, VariableDefinition,
+    BinaryExpression, Composite, Conditional, Equality, ForBinding, ForExpression,
+    Interval, MacroCall, NumberLiteral, MacroDefinition, Program, RawString, Step,
+    Variable, VariableDefinition,
     UnaryExpression,
 )
 from .errors import CompileError
@@ -75,10 +76,10 @@ class Parser:
         if self._accept("LBRACE"):
             content = self._composite_after_open(start.location)
             self._expect("LBRACK")
-            positions = self._expr_list("RBRACK")
+            positions = Composite(self._expr_list("RBRACK"), start.location)
         else:
             self._expect("LBRACK")
-            positions = self._expr_list("RBRACK")
+            positions = Composite(self._expr_list("RBRACK"), start.location)
             self._expect("LBRACE")
             content = self._composite_after_open(start.location)
         self._expect("SEMICOLON")
@@ -98,7 +99,30 @@ class Parser:
         return expressions
 
     def _expr(self):
-        return self._expr_interval()
+        return self._expr_for()
+
+    def _expr_for(self):
+        if not self._accept("FOR"):
+            return self._expr_interval()
+        start = self.tokens[self.index - 1]
+        self._expect("LPAREN")
+        bindings = []
+        while True:
+            name = self._expect("IDENTIFIER")
+            self._expect("IN")
+            source = self._expr_for()
+            bindings.append(ForBinding(name.value, source, name.location))
+            if self._accept("COMMA"):
+                continue
+            if self.current.kind != "IDENTIFIER":
+                break
+        if not bindings:
+            self._error("for expression requires at least one binding", start)
+        self._expect("RPAREN")
+        self._expect("DO")
+        self._expect("LBRACE")
+        body = self._composite_after_open(start.location)
+        return ForExpression(bindings, body, start.location)
 
     def _expr_interval(self):
         expression = self._expr_condition()

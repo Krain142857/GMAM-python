@@ -81,6 +81,20 @@ class Equality(Expr):
 
 
 @dataclass
+class ForBinding:
+    name: str
+    source: Expr
+    location: Location
+
+
+@dataclass
+class ForExpression(Expr):
+    bindings: List[ForBinding]
+    body: Composite
+    location: Location
+
+
+@dataclass
 class VariableDefinition:
     name: str
     value: Optional[Expr]
@@ -98,7 +112,7 @@ class MacroDefinition:
 @dataclass
 class Step:
     content: Composite
-    positions: List[Expr]
+    positions: Composite
     location: Location
 
 
