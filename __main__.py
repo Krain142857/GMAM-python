@@ -12,9 +12,9 @@ def main() -> int:
     parser.add_argument("-o", "--output", help="output timeline XML (defaults to stdout)")
     parser.add_argument(
         "-f", "--format",
-        choices=("gms", "gm82"),
+        choices=("gms", "gm82", "step"),
         default="gms",
-        help="output format: gms XML or gm82 action script (default: gms)",
+        help="output format: gms XML, gm82 action script, or step event code (default: gms)",
     )
     parser.add_argument(
         "--time-scale",
@@ -25,9 +25,17 @@ def main() -> int:
     args = parser.parse_args()
     try:
         compiler = Compiler()
-        timeline = compiler.compile_files(args.inputs, time_scale=args.time_scale)
+        timeline = compiler.compile_files(
+            args.inputs,
+            time_scale=args.time_scale,
+            output_format="step" if args.format == "step" else "timeline",
+        )
+        input_path = Path(args.inputs[-1])
+        output_path = input_path.with_suffix(".out")
+        with output_path.open("w", encoding="utf-8", newline="\n") as stream:
+            compiler.write_output_source(stream)
+        print(f"已生成计算后的 step 文件：{output_path}", file=sys.stderr)
         if compiler.scaled_source is not None:
-            input_path = Path(args.inputs[0])
             scaled_path = input_path.with_name(f"{input_path.stem}.scaled.tl")
             with scaled_path.open("w", encoding="utf-8", newline="\n") as stream:
                 compiler.write_scaled_source(stream)

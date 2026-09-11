@@ -28,8 +28,11 @@ class Translator:
         self._non_integer_timing = False
         self._timing_location = None
         self.scaled_source = None
+        self.output_source = None
+        self._step_mode = False
 
-    def translate(self, program: Program, time_scale="ask", confirm=None) -> Dict[int, list[str]]:
+    def translate(self, program: Program, time_scale="ask", confirm=None, step_mode=False) -> Dict[int, list[str]]:
+        self._step_mode = step_mode
         for declaration in program.declarations:
             if isinstance(declaration, VariableDefinition):
                 if declaration.name in self.variables or declaration.name in self.macros:
@@ -164,13 +167,24 @@ class Translator:
             return self._evaluate_binary(expression, local)
         if isinstance(expression, Equality):
             left, right = self._evaluate(expression.left, local), self._evaluate(expression.right, local)
-            if left.kind not in ("string", "number") or right.kind not in ("string", "number"):
-                self._error("equality operands must be strings or numbers", expression.location)
-            if left.kind == right.kind == "number":
-                equal = left.value == right.value
+            if expression.operator == "==":
+                if left.kind not in ("string", "number") or right.kind not in ("string", "number"):
+                    self._error("equality operands must be strings or numbers", expression.location)
+                result = (
+                    left.value == right.value
+                    if left.kind == right.kind == "number"
+                    else self._format_value(left) == self._format_value(right)
+                )
             else:
-                equal = self._format_value(left) == self._format_value(right)
-            return Value("number", int(equal))
+                if left.kind != "number" or right.kind != "number":
+                    self._error(f"{expression.operator} operands must be numbers", expression.location)
+                result = {
+                    "<": left.value < right.value,
+                    ">": left.value > right.value,
+                    "<=": left.value <= right.value,
+                    ">=": left.value >= right.value,
+                }[expression.operator]
+            return Value("number", int(result))
         if isinstance(expression, Conditional):
             condition = self._evaluate(expression.condition, local)
             if condition.kind != "number":
@@ -200,7 +214,13 @@ class Translator:
         step_per_beat = self.variables["TLSTEP_PER_BEAT"]
         if note_per_beat.kind != "number" or step_per_beat.kind != "number":
             self._error("NOTE_PER_BEAT and TLSTEP_PER_BEAT must be numbers", call.location)
-        step_per_note = step_per_beat.value * note_per_beat.value / note.value
+        if self._step_mode:
+            bpm = self.variables["BPM"]
+            if bpm.kind != "number" or bpm.value <= 0:
+                self._error("BPM must be a positive number", call.location)
+            step_per_note = 50 * 60 / bpm.value * note_per_beat.value / note.value
+        else:
+            step_per_note = step_per_beat.value * note_per_beat.value / note.value
         if list_value.kind == "number":
             result = Value("number", time.value + list_value.value * step_per_note)
             self._non_integer_timing |= not self._is_integer(result.value)
@@ -351,12 +371,18 @@ class Translator:
         return value.value
 
     def _resolve_moments(self, time_scale, confirm) -> Dict[int, list[str]]:
+        if self._step_mode:
+            timeline = self._rounded_timeline(self.timeline)
+            self.output_source = self._format_step_source(timeline)
+            return timeline
         if time_scale not in ("ask", "adjust", "round"):
             raise ValueError("unsupported time scale strategy")
         if not self._non_integer_timing:
             if any(not self._is_integer(moment) for moment in self.timeline):
                 self._error("step position must evaluate to an integer", self._timing_location)
-            return {int(moment): values for moment, values in self.timeline.items()}
+            timeline = {int(moment): values for moment, values in self.timeline.items()}
+            self.output_source = self._format_step_source(timeline)
+            return timeline
         if any(not self._is_integer(note) for note in self._timing_notes):
             self._error("note must be an integer for adaptive timing", self._timing_location)
         note_values = [int(note) for note in self._timing_notes]
@@ -393,29 +419,46 @@ class Translator:
             if suggested_step <= 0:
                 self._error("TLSTEP_PER_BEAT must be positive", self._timing_location)
             factor = suggested_step / current_step
-            timeline = {
-                int(Decimal(str(moment * factor)).quantize(Decimal("1"), rounding=ROUND_HALF_UP)): values
-                for moment, values in self.timeline.items()
-            }
+            timeline = self._rounded_timeline(
+                {moment * factor: values for moment, values in self.timeline.items()}
+            )
             self.scaled_source = self._format_scaled_source(timeline, suggested_step)
+            self.output_source = self._format_step_source(timeline)
             return timeline
-        return {
-            int(Decimal(str(moment)).quantize(Decimal("1"), rounding=ROUND_HALF_UP)): values
-            for moment, values in self.timeline.items()
-        }
+        timeline = self._rounded_timeline(self.timeline)
+        self.output_source = self._format_step_source(timeline)
+        return timeline
 
     @staticmethod
     def _format_scaled_source(timeline, step_per_beat) -> str:
         lines = [f"TLSTEP_PER_BEAT = {Translator._format_number(step_per_beat)};"]
+        lines.extend(Translator._format_step_lines(timeline))
+        return "\n".join(lines) + "\n"
+
+    @staticmethod
+    def _format_step_source(timeline) -> str:
+        return "\n".join(Translator._format_step_lines(timeline)) + "\n"
+
+    @staticmethod
+    def _format_step_lines(timeline) -> list[str]:
         grouped = {}
         for moment in sorted(timeline):
             moments = str(moment)
             for content in timeline[moment]:
                 grouped.setdefault(content, []).append(moments)
+        lines = []
         for content, moments in grouped.items():
             escaped = content.replace("\\", "\\\\").replace("`", "\\`")
             lines.append(f"[{', '.join(moments)}] {{`{escaped}`}};")
-        return "\n".join(lines) + "\n"
+        return lines
+
+    @staticmethod
+    def _rounded_timeline(timeline) -> Dict[int, list[str]]:
+        rounded = {}
+        for moment, values in timeline.items():
+            target = int(Decimal(str(moment)).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+            rounded.setdefault(target, []).extend(values)
+        return rounded
 
     @staticmethod
     def _flatten(values) -> list[Value]:

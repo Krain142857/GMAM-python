@@ -114,7 +114,9 @@ class Lexer:
                 self._advance(text)
                 result.append(Token(self._keywords.get(text, "IDENTIFIER"), text, start))
                 continue
-            kind = {"++": "INCLUDEEND", "==": "EQU"}.get(rest[:2])
+            kind = {
+                "++": "INCLUDEEND", "==": "EQU", "<=": "LE", ">=": "GE",
+            }.get(rest[:2])
             if kind:
                 self._advance(rest[:2])
                 result.append(Token(kind, rest[:2], start))
@@ -122,8 +124,9 @@ class Lexer:
             kind = {
                 "{": "LBRACE", "}": "RBRACE", "[": "LBRACK", "]": "RBRACK",
                 ";": "SEMICOLON", ",": "COMMA", ":": "COLON", "=": "ASSIGN",
-                "?": "QUESTION", "(": "LPAREN", ")": "RPAREN", "@": "AT",
+                "?": "QUESTION", "(": "LPAREN", ")": "RPAREN",
                 "+": "PLUS", "-": "MINUS", "*": "MUL", "/": "SLASH",
+                "<": "LT", ">": "GT",
             }.get(rest[0])
             if kind:
                 self._advance(rest[0])

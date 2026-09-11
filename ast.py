@@ -85,6 +85,7 @@ class Equality(Expr):
     left: Expr
     right: Expr
     location: Location
+    operator: str = "=="
 
 
 @dataclass

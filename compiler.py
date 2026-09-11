@@ -15,14 +15,24 @@ class Compiler:
         sources: Iterable[str],
         time_scale="ask",
         confirm: Optional[Callable[[str], str]] = None,
+        output_format: str = "timeline",
     ) -> dict[int, list[str]]:
         self.scaled_source = None
+        self.output_source = None
         translator = Translator()
         declarations = []
         for source in sources:
             declarations.extend(Parser(source).parse().declarations)
-        timeline = translator.translate(Program(declarations), time_scale, confirm)
+        if output_format not in ("timeline", "step"):
+            raise ValueError(f"unsupported output format: {output_format}")
+        timeline = translator.translate(
+            Program(declarations),
+            time_scale,
+            confirm,
+            step_mode=output_format == "step",
+        )
         self.scaled_source = translator.scaled_source
+        self.output_source = translator.output_source
         return timeline
 
     def compile_files(
@@ -30,16 +40,22 @@ class Compiler:
         filenames: Iterable[str],
         time_scale="ask",
         confirm: Optional[Callable[[str], str]] = None,
+        output_format: str = "timeline",
     ) -> dict[int, list[str]]:
         return self.compile_sources(
             (Path(filename).read_text(encoding="utf-8") for filename in filenames),
             time_scale,
             confirm,
+            output_format,
         )
 
     def write_scaled_source(self, output: TextIO) -> None:
         if self.scaled_source is not None:
             output.write(self.scaled_source)
+
+    def write_output_source(self, output: TextIO) -> None:
+        if self.output_source is not None:
+            output.write(self.output_source)
 
     @staticmethod
     def write_timeline(timeline: dict[int, list[str]], output: TextIO, format: str = "gms") -> None:
@@ -48,6 +64,9 @@ class Compiler:
             return
         if format == "gms":
             Compiler.write_gms(timeline, output)
+            return
+        if format == "step":
+            Compiler.write_step(timeline, output)
             return
         raise ValueError(f"unsupported output format: {format}")
         
@@ -102,3 +121,18 @@ class Compiler:
                 output.write(content)
                 if content and not content.endswith("\n"):
                     output.write("\n")
+
+    @staticmethod
+    def write_step(timeline: dict[int, list[str]], output: TextIO) -> None:
+        """Write a plain-text step event switch."""
+        output.write("step+=1;\n")
+        output.write("switch (step) {\n")
+        for moment in sorted(timeline):
+            output.write(f"    case {moment}:\n")
+            for content in timeline[moment]:
+                output.write("      ")
+                output.write(content)
+                if not content.endswith("\n"):
+                    output.write("\n")
+            output.write("      break;\n")
+        output.write("}\n")

@@ -87,7 +87,7 @@ class Parser:
     def _definition(self):
         start = self._expect("DEF")
         name = self._expect("IDENTIFIER")
-        if self._accept("AT"):
+        if self.current.kind == "LPAREN":
             self._expect("LPAREN")
             parameters = self._parameters()
             self._expect("RPAREN")
@@ -199,8 +199,16 @@ class Parser:
 
     def _expr_equality(self):
         expression = self._expr_additive()
-        while self._accept("EQU"):
-            expression = Equality(expression, self._expr_additive(), expression.location)
+        operators = {"EQU", "LT", "GT", "LE", "GE"}
+        while self.current.kind in operators:
+            operator = self.current.value
+            self.index += 1
+            expression = Equality(
+                expression,
+                self._expr_additive(),
+                expression.location,
+                operator,
+            )
         return expression
 
     def _expr_additive(self):
@@ -243,8 +251,7 @@ class Parser:
             self._expect("RPAREN")
             return expression
         if self._accept("IDENTIFIER"):
-            if self._accept("AT"):
-                self._expect("LPAREN")
+            if self._accept("LPAREN"):
                 arguments = self._arguments()
                 self._expect("RPAREN")
                 return MacroCall(token.value, arguments, token.location)
