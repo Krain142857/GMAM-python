@@ -3,7 +3,7 @@
 from typing import List, Optional, Tuple
 
 from .ast import (
-    BinaryExpression, Composite, Conditional, Equality, ForBinding, ForExpression,
+    Assignment, BinaryExpression, Composite, Conditional, Equality, ExpressionStatement, ForBinding, ForExpression,
     Interval, MacroCall, NumberLiteral, MacroDefinition, Program, RawString, Step,
     Variable, VariableDefinition,
     UnaryExpression,
@@ -43,11 +43,26 @@ class Parser:
         while self.current.kind != "END":
             if self.current.kind == "DEF":
                 declarations.append(self._definition())
-            elif self.current.kind in ("LBRACE", "LBRACK"):
+            elif self.current.kind == "LBRACE":
+                declarations.append(self._brace_top_level())
+            elif self.current.kind == "LBRACK":
                 declarations.append(self._step())
             else:
-                self._error("expected a definition or step")
+                start = self.current
+                expression = self._expr()
+                self._expect("SEMICOLON")
+                declarations.append(ExpressionStatement(expression, start.location))
         return Program(declarations)
+
+    def _brace_top_level(self):
+        start = self._expect("LBRACE")
+        content = self._composite_after_open(start.location)
+        if self._accept("LBRACK"):
+            positions = Composite(self._expr_list("RBRACK"), start.location)
+            self._expect("SEMICOLON")
+            return Step(content, positions, start.location)
+        self._expect("SEMICOLON")
+        return ExpressionStatement(content, start.location)
 
     def _definition(self):
         start = self._expect("DEF")
@@ -99,7 +114,12 @@ class Parser:
         return expressions
 
     def _expr(self):
-        return self._expr_for()
+        expression = self._expr_for()
+        if self._accept("ASSIGN"):
+            if not isinstance(expression, Variable):
+                self._error("assignment target must be an identifier", self.tokens[self.index - 1])
+            return Assignment(expression.name, self._expr(), expression.location)
+        return expression
 
     def _expr_for(self):
         if not self._accept("FOR"):
@@ -196,6 +216,10 @@ class Parser:
         if self._accept("IDENTIFIER"):
             if self._accept("AT"):
                 self._expect("LPAREN")
+                arguments = self._arguments()
+                self._expect("RPAREN")
+                return MacroCall(token.value, arguments, token.location)
+            if token.value in ("go", "look") and self._accept("LPAREN"):
                 arguments = self._arguments()
                 self._expect("RPAREN")
                 return MacroCall(token.value, arguments, token.location)

@@ -38,6 +38,13 @@ class BinaryExpression(Expr):
 
 
 @dataclass
+class Assignment(Expr):
+    name: str
+    value: Expr
+    location: Location
+
+
+@dataclass
 class Variable(Expr):
     name: str
     location: Location
@@ -113,6 +120,12 @@ class MacroDefinition:
 class Step:
     content: Composite
     positions: Composite
+    location: Location
+
+
+@dataclass
+class ExpressionStatement:
+    expression: Expr
     location: Location
 
 

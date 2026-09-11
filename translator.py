@@ -4,8 +4,8 @@ from decimal import Decimal, ROUND_HALF_UP
 from typing import Dict, Optional
 
 from .ast import (
-    BinaryExpression, Composite, Conditional, Equality, Expr, ForExpression, Interval,
-    MacroCall, NumberLiteral, MacroDefinition, Program, RawString, Value, Variable,
+    Assignment, BinaryExpression, Composite, Conditional, Equality, Expr, ForExpression, Interval,
+    ExpressionStatement, MacroCall, NumberLiteral, MacroDefinition, Program, RawString, Value, Variable,
     VariableDefinition,
     UnaryExpression,
 )
@@ -14,7 +14,12 @@ from .errors import CompileError
 
 class Translator:
     def __init__(self):
-        self.variables: Dict[str, Value] = {}
+        self.variables: Dict[str, Value] = {
+            "TIME": Value("number", 0),
+            "BPM": Value("number", 120),
+            "NOTE_PER_BEAT": Value("number", 4),
+            "TLSTEP_PER_BEAT": Value("number", 8),
+        }
         self.macros: Dict[str, MacroDefinition] = {}
         self.timeline: Dict[int, list[str]] = {}
         self._macro_stack = []
@@ -30,6 +35,8 @@ class Translator:
                     self._error("duplicate definition", declaration.location)
                 self._validate_parameters(declaration)
                 self.macros[declaration.name] = declaration
+            elif isinstance(declaration, ExpressionStatement):
+                self._evaluate(declaration.expression)
             else:
                 content = self._evaluate(declaration.content)
                 if content.kind != "list":
@@ -60,7 +67,8 @@ class Translator:
     def _evaluate(self, expression: Optional[Expr], local: Optional[Dict[str, Value]] = None) -> Value:
         if expression is None:
             return Value("default", None)
-        local = local or {}
+        if local is None:
+            local = {}
         if isinstance(expression, NumberLiteral):
             return Value("number", expression.value)
         if isinstance(expression, UnaryExpression):
@@ -74,8 +82,18 @@ class Translator:
             if expression.name in self.variables:
                 return self.variables[expression.name]
             self._error(f"undefined identifier {expression.name}", expression.location)
+        if isinstance(expression, Assignment):
+            value = self._evaluate(expression.value, local)
+            if expression.name in local:
+                local[expression.name] = value
+            elif expression.name in self.variables:
+                self.variables[expression.name] = value
+            else:
+                self._error(f"undefined identifier {expression.name}", expression.location)
+            return Value("null", None)
         if isinstance(expression, Composite):
-            return Value("list", [self._evaluate(item, local) for item in expression.expressions])
+            values = [self._evaluate(item, local) for item in expression.expressions]
+            return Value("list", [value for value in values if value.kind != "null"])
         if isinstance(expression, ForExpression):
             sources = []
             names = set()
@@ -128,8 +146,43 @@ class Translator:
                 self._error("conditional condition must be a number", expression.condition.location)
             return self._evaluate(expression.true_branch if condition.value else expression.false_branch, local)
         if isinstance(expression, MacroCall):
+            if expression.name in ("go", "look"):
+                return self._call_timing_builtin(expression, local)
             return self._call_macro(expression, local)
         self._error("unsupported expression", expression.location)
+
+    def _call_timing_builtin(self, call: MacroCall, local: Dict[str, Value]) -> Value:
+        if len(call.arguments) != 2 or any(name is not None for name, _ in call.arguments):
+            self._error(f"{call.name} requires listValue and note", call.location)
+        list_value = self._evaluate(call.arguments[0][1], local)
+        note = self._evaluate(call.arguments[1][1], local)
+        if list_value.kind not in ("list", "number"):
+            self._error(f"{call.name} listValue must be a number or list", call.arguments[0][1].location)
+        if note.kind != "number" or note.value <= 0:
+            self._error(f"{call.name} note must be a positive number", call.arguments[1][1].location)
+        time = self.variables["TIME"]
+        if time.kind != "number":
+            self._error("TIME must be a number", call.location)
+        note_per_beat = self.variables["NOTE_PER_BEAT"]
+        step_per_beat = self.variables["TLSTEP_PER_BEAT"]
+        if note_per_beat.kind != "number" or step_per_beat.kind != "number":
+            self._error("NOTE_PER_BEAT and TLSTEP_PER_BEAT must be numbers", call.location)
+        step_per_note = step_per_beat.value * note_per_beat.value / note.value
+        if list_value.kind == "number":
+            result = Value("number", time.value + list_value.value * step_per_note)
+            if call.name == "go":
+                self.variables["TIME"] = result
+            return result
+        values = []
+        for value in self._flatten(list_value.value):
+            if value.kind != "number":
+                self._error(f"{call.name} listValue must contain numbers", call.arguments[0][1].location)
+            values.append(Value("number", time.value + value.value * step_per_note))
+        if call.name == "go":
+            if not values:
+                self._error("next listValue cannot be empty", call.arguments[0][1].location)
+            self.variables["TIME"] = max(values, key=lambda value: value.value)
+        return Value("list", values)
 
     def _call_macro(self, call: MacroCall, caller_locals: Dict[str, Value]) -> Value:
         macro = self.macros.get(call.name)

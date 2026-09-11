@@ -105,7 +105,7 @@ class Lexer:
                 self._advance(text)
                 result.append(Token("NUMBER", float(text) if "." in text else int(text), start))
                 continue
-            if rest[0].isalpha():
+            if rest[0].isalpha() or rest[0] == "_":
                 end = 1
                 while end < len(rest) and (rest[end].isalnum() or rest[end] == "_"):
                     end += 1
