@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Iterable, Optional, TextIO
+from typing import Callable, Iterable, Optional, TextIO
 from xml.sax.saxutils import escape
 
 from .ast import Program
@@ -10,16 +10,36 @@ from .translator import Translator
 class Compiler:
     """Compile GMAM source files into timeline XML."""
 
-    def compile_sources(self, sources: Iterable[str]) -> dict[int, list[str]]:
+    def compile_sources(
+        self,
+        sources: Iterable[str],
+        time_scale="ask",
+        confirm: Optional[Callable[[str], str]] = None,
+    ) -> dict[int, list[str]]:
+        self.scaled_source = None
         translator = Translator()
         declarations = []
         for source in sources:
             declarations.extend(Parser(source).parse().declarations)
-        translator.translate(Program(declarations))
-        return translator.timeline
+        timeline = translator.translate(Program(declarations), time_scale, confirm)
+        self.scaled_source = translator.scaled_source
+        return timeline
 
-    def compile_files(self, filenames: Iterable[str]) -> dict[int, list[str]]:
-        return self.compile_sources(Path(filename).read_text(encoding="utf-8") for filename in filenames)
+    def compile_files(
+        self,
+        filenames: Iterable[str],
+        time_scale="ask",
+        confirm: Optional[Callable[[str], str]] = None,
+    ) -> dict[int, list[str]]:
+        return self.compile_sources(
+            (Path(filename).read_text(encoding="utf-8") for filename in filenames),
+            time_scale,
+            confirm,
+        )
+
+    def write_scaled_source(self, output: TextIO) -> None:
+        if self.scaled_source is not None:
+            output.write(self.scaled_source)
 
     @staticmethod
     def write_timeline(timeline: dict[int, list[str]], output: TextIO, format: str = "gms") -> None:

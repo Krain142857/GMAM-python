@@ -1,6 +1,7 @@
 """Semantic evaluation and timeline translation."""
 
 from decimal import Decimal, ROUND_HALF_UP
+from math import lcm
 from typing import Dict, Optional
 
 from .ast import (
@@ -21,10 +22,14 @@ class Translator:
             "TLSTEP_PER_BEAT": Value("number", 8),
         }
         self.macros: Dict[str, MacroDefinition] = {}
-        self.timeline: Dict[int, list[str]] = {}
+        self.timeline: Dict[float, list[str]] = {}
         self._macro_stack = []
+        self._timing_notes = []
+        self._non_integer_timing = False
+        self._timing_location = None
+        self.scaled_source = None
 
-    def translate(self, program: Program) -> Dict[int, list[str]]:
+    def translate(self, program: Program, time_scale="ask", confirm=None) -> Dict[int, list[str]]:
         for declaration in program.declarations:
             if isinstance(declaration, VariableDefinition):
                 if declaration.name in self.variables or declaration.name in self.macros:
@@ -47,10 +52,11 @@ class Translator:
                 content_text = "".join(
                     self._format_value(value) for value in self._flatten(content.value)
                 )
+                self._timing_location = declaration.positions.location
                 for value in self._flatten(positions.value):
                     frame = self._moment(value, declaration.positions.location)
                     self.timeline.setdefault(frame, []).append(content_text)
-        return self.timeline
+        return self._resolve_moments(time_scale, confirm)
 
     def _validate_parameters(self, macro):
         seen_default = False
@@ -160,6 +166,8 @@ class Translator:
             self._error(f"{call.name} listValue must be a number or list", call.arguments[0][1].location)
         if note.kind != "number" or note.value <= 0:
             self._error(f"{call.name} note must be a positive number", call.arguments[1][1].location)
+        self._timing_notes.append(note.value)
+        self._timing_location = call.location
         time = self.variables["TIME"]
         if time.kind != "number":
             self._error("TIME must be a number", call.location)
@@ -170,6 +178,7 @@ class Translator:
         step_per_note = step_per_beat.value * note_per_beat.value / note.value
         if list_value.kind == "number":
             result = Value("number", time.value + list_value.value * step_per_note)
+            self._non_integer_timing |= not self._is_integer(result.value)
             if call.name == "go":
                 self.variables["TIME"] = result
             return result
@@ -178,6 +187,7 @@ class Translator:
             if value.kind != "number":
                 self._error(f"{call.name} listValue must contain numbers", call.arguments[0][1].location)
             values.append(Value("number", time.value + value.value * step_per_note))
+        self._non_integer_timing |= any(not self._is_integer(value.value) for value in values)
         if call.name == "go":
             if not values:
                 self._error("next listValue cannot be empty", call.arguments[0][1].location)
@@ -310,10 +320,77 @@ class Translator:
             current += difference
         return values
 
-    def _moment(self, value: Value, location) -> int:
-        if value.kind != "number" or not self._is_integer(value.value) or value.value < 0:
-            self._error("step position must evaluate to a natural number", location)
-        return int(value.value)
+    def _moment(self, value: Value, location) -> float:
+        if value.kind != "number" or value.value < 0:
+            self._error("step position must evaluate to a non-negative number", location)
+        return value.value
+
+    def _resolve_moments(self, time_scale, confirm) -> Dict[int, list[str]]:
+        if time_scale not in ("ask", "adjust", "round"):
+            raise ValueError("unsupported time scale strategy")
+        if not self._non_integer_timing:
+            if any(not self._is_integer(moment) for moment in self.timeline):
+                self._error("step position must evaluate to an integer", self._timing_location)
+            return {int(moment): values for moment, values in self.timeline.items()}
+        if any(not self._is_integer(note) for note in self._timing_notes):
+            self._error("note must be an integer for adaptive timing", self._timing_location)
+        note_values = [int(note) for note in self._timing_notes]
+        common_note = lcm(*note_values)
+        note_per_beat = self.variables["NOTE_PER_BEAT"].value
+        if not self._is_integer(note_per_beat) or note_per_beat <= 0:
+            self._error("NOTE_PER_BEAT must be a positive integer", self._timing_location)
+        suggested_step = common_note / note_per_beat
+        current_step = self.variables["TLSTEP_PER_BEAT"].value
+        alternate_step = suggested_step * current_step
+        suggested_text = self._format_number(suggested_step)
+        alternate_text = self._format_number(alternate_step)
+        if time_scale == "ask":
+            if confirm is None:
+                confirm = input
+            answer = confirm(
+                f"检测到非整数 TIME。推荐 TLSTEP_PER_BEAT：\n"
+                f"1. {suggested_text}（按音符计算）\n"
+                f"2. {alternate_text}（若手动输入过具体时间，可以考虑使用此值）\n"
+                f"是否调整？[y/N] "
+            ).strip().lower()
+            if answer in ("y", "yes", "是"):
+                selected = confirm(
+                    f"请输入 TLSTEP_PER_BEAT（直接回车使用推荐值 {suggested_text}）："
+                ).strip()
+                try:
+                    suggested_step = float(selected) if selected else suggested_step
+                except ValueError:
+                    self._error("TLSTEP_PER_BEAT must be a number", self._timing_location)
+                time_scale = "adjust"
+            else:
+                time_scale = "round"
+        if time_scale == "adjust":
+            if suggested_step <= 0:
+                self._error("TLSTEP_PER_BEAT must be positive", self._timing_location)
+            factor = suggested_step / current_step
+            timeline = {
+                int(Decimal(str(moment * factor)).quantize(Decimal("1"), rounding=ROUND_HALF_UP)): values
+                for moment, values in self.timeline.items()
+            }
+            self.scaled_source = self._format_scaled_source(timeline, suggested_step)
+            return timeline
+        return {
+            int(Decimal(str(moment)).quantize(Decimal("1"), rounding=ROUND_HALF_UP)): values
+            for moment, values in self.timeline.items()
+        }
+
+    @staticmethod
+    def _format_scaled_source(timeline, step_per_beat) -> str:
+        lines = [f"TLSTEP_PER_BEAT = {Translator._format_number(step_per_beat)};"]
+        grouped = {}
+        for moment in sorted(timeline):
+            moments = str(moment)
+            for content in timeline[moment]:
+                grouped.setdefault(content, []).append(moments)
+        for content, moments in grouped.items():
+            escaped = content.replace("\\", "\\\\").replace("`", "\\`")
+            lines.append(f"[{', '.join(moments)}] {{`{escaped}`}};")
+        return "\n".join(lines) + "\n"
 
     @staticmethod
     def _flatten(values) -> list[Value]:
@@ -328,6 +405,10 @@ class Translator:
     @staticmethod
     def _is_integer(value: object) -> bool:
         return isinstance(value, (int, float)) and float(value).is_integer()
+
+    @staticmethod
+    def _format_number(value: object) -> str:
+        return str(int(value)) if Translator._is_integer(value) else str(value)
 
     @staticmethod
     def _format_value(value: Value) -> str:
