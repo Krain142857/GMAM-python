@@ -4,6 +4,9 @@ GMAM Python 是一个将 GMAM 时间轴源文件（`.tl`）翻译为 GameMaker
 时间轴文件的 Python 编译器。它包含词法分析、语法分析、表达式求值和
 两种时间轴输出格式。
 
+除普通 Step 外，语言还支持顶层 `forstep` 语句，可遍历列表批量生成
+多个 Step。具体语法请参阅 [RULES.md](RULES.md)。
+
 ## 运行环境
 
 - Python 3.9 或更高版本

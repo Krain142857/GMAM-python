@@ -4,7 +4,7 @@ from typing import List, Optional, Tuple
 
 from .ast import (
     Assignment, BinaryExpression, Composite, Conditional, Equality, ExpressionStatement, ForBinding, ForExpression,
-    Interval, MacroCall, NumberLiteral, MacroDefinition, Program, RawString, Step,
+    ForStep, Interval, MacroCall, NumberLiteral, MacroDefinition, Program, RawString, Step,
     Variable, VariableDefinition,
     UnaryExpression,
 )
@@ -43,6 +43,8 @@ class Parser:
         while self.current.kind != "END":
             if self.current.kind == "DEF":
                 declarations.append(self._definition())
+            elif self.current.kind == "FORSTEP":
+                declarations.append(self._forstep())
             elif self.current.kind == "LBRACE":
                 declarations.append(self._brace_top_level())
             elif self.current.kind == "LBRACK":
@@ -53,6 +55,24 @@ class Parser:
                 self._expect("SEMICOLON")
                 declarations.append(ExpressionStatement(expression, start.location))
         return Program(declarations)
+
+    def _forstep(self):
+        start = self._expect("FORSTEP")
+        self._expect("LPAREN")
+        bindings = []
+        names = set()
+        while True:
+            name = self._expect("IDENTIFIER")
+            if name.value in names:
+                self._error("forstep binding identifier is duplicated", name)
+            names.add(name.value)
+            self._expect("IN")
+            bindings.append(ForBinding(name.value, self._expr_for(), name.location))
+            if not self._accept("COMMA"):
+                break
+        self._expect("RPAREN")
+        self._expect("DO")
+        return ForStep(bindings, self._step(), start.location)
 
     def _brace_top_level(self):
         start = self._expect("LBRACE")

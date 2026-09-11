@@ -124,6 +124,13 @@ class Step:
 
 
 @dataclass
+class ForStep:
+    bindings: List[ForBinding]
+    step: Step
+    location: Location
+
+
+@dataclass
 class ExpressionStatement:
     expression: Expr
     location: Location

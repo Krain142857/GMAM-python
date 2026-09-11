@@ -27,6 +27,7 @@ class Lexer:
         "rep": "REP",
         "flat": "FLAT",
         "for": "FOR",
+        "forstep": "FORSTEP",
         "in": "IN",
         "do": "DO",
     }

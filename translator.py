@@ -5,8 +5,8 @@ from math import lcm
 from typing import Dict, Optional
 
 from .ast import (
-    Assignment, BinaryExpression, Composite, Conditional, Equality, Expr, ForExpression, Interval,
-    ExpressionStatement, MacroCall, NumberLiteral, MacroDefinition, Program, RawString, Value, Variable,
+    Assignment, BinaryExpression, Composite, Conditional, Equality, Expr, ForExpression, ForStep, Interval,
+    ExpressionStatement, MacroCall, NumberLiteral, MacroDefinition, Program, RawString, Step, Value, Variable,
     VariableDefinition,
     UnaryExpression,
 )
@@ -42,21 +42,46 @@ class Translator:
                 self.macros[declaration.name] = declaration
             elif isinstance(declaration, ExpressionStatement):
                 self._evaluate(declaration.expression)
+            elif isinstance(declaration, ForStep):
+                self._translate_for_step(declaration)
             else:
-                content = self._evaluate(declaration.content)
-                if content.kind != "list":
-                    self._error("step content must be a composite list", declaration.location)
-                positions = self._evaluate(declaration.positions)
-                if positions.kind != "list":
-                    self._error("step positions must be a composite list", declaration.location)
-                content_text = "".join(
-                    self._format_value(value) for value in self._flatten(content.value)
-                )
-                self._timing_location = declaration.positions.location
-                for value in self._flatten(positions.value):
-                    frame = self._moment(value, declaration.positions.location)
-                    self.timeline.setdefault(frame, []).append(content_text)
+                self._translate_step(declaration)
         return self._resolve_moments(time_scale, confirm)
+
+    def _translate_for_step(self, declaration: ForStep) -> None:
+        sources = []
+        names = set()
+        for binding in declaration.bindings:
+            if binding.name in names:
+                self._error("forstep binding identifier is duplicated", binding.location)
+            names.add(binding.name)
+            source = self._evaluate(binding.source)
+            if source.kind != "list":
+                self._error("forstep source must evaluate to a list", binding.location)
+            sources.append(self._flatten(source.value))
+        lengths = {len(source) for source in sources}
+        if len(lengths) > 1:
+            self._error("forstep source lists must have equal length", declaration.location)
+        for index in range(len(sources[0])):
+            local = {}
+            for binding, source in zip(declaration.bindings, sources):
+                local[binding.name] = source[index]
+            self._translate_step(declaration.step, local)
+
+    def _translate_step(self, declaration: Step, local=None) -> None:
+        content = self._evaluate(declaration.content, local)
+        if content.kind != "list":
+            self._error("step content must be a composite list", declaration.location)
+        positions = self._evaluate(declaration.positions, local)
+        if positions.kind != "list":
+            self._error("step positions must be a composite list", declaration.location)
+        content_text = "".join(
+            self._format_value(value) for value in self._flatten(content.value)
+        )
+        self._timing_location = declaration.positions.location
+        for value in self._flatten(positions.value):
+            frame = self._moment(value, declaration.positions.location)
+            self.timeline.setdefault(frame, []).append(content_text)
 
     def _validate_parameters(self, macro):
         seen_default = False
