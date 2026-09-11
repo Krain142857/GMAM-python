@@ -145,9 +145,18 @@ class Parser:
         return ForExpression(bindings, body, start.location)
 
     def _expr_interval(self):
-        expression = self._expr_condition()
+        start = self.current
+        expression = (
+            NumberLiteral(0, start.location)
+            if self.current.kind == "COLON"
+            else self._expr_condition()
+        )
         if self._accept("COLON"):
-            difference = self._expr_condition()
+            difference = (
+                NumberLiteral(1, self.current.location)
+                if self.current.kind == "COLON"
+                else self._expr_condition()
+            )
             self._expect("COLON")
             end = self._expr_condition()
             return Interval(
