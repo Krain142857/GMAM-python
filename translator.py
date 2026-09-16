@@ -36,11 +36,11 @@ class Translator:
         for declaration in program.declarations:
             if isinstance(declaration, VariableDefinition):
                 if declaration.name in self.variables or declaration.name in self.macros:
-                    self._error("duplicate definition", declaration.location)
+                    self._error(f"duplicate definition {declaration.name!r}", declaration.location, declaration.name)
                 self.variables[declaration.name] = self._evaluate(declaration.value) if declaration.value else Value("default", None)
             elif isinstance(declaration, MacroDefinition):
                 if declaration.name in self.variables or declaration.name in self.macros:
-                    self._error("duplicate definition", declaration.location)
+                    self._error(f"duplicate definition {declaration.name!r}", declaration.location, declaration.name)
                 self._validate_parameters(declaration)
                 self.macros[declaration.name] = declaration
             elif isinstance(declaration, ExpressionStatement):
@@ -60,24 +60,31 @@ class Translator:
             names.add(binding.name)
             source = self._evaluate(binding.source)
             if source.kind != "list":
-                self._error("forstep source must evaluate to a list", binding.location)
+                self._error("forstep source must evaluate to a list", binding.location, source)
             sources.append(self._flatten(source.value))
         lengths = {len(source) for source in sources}
         if len(lengths) > 1:
-            self._error("forstep source lists must have equal length", declaration.location)
+            self._error(
+                f"forstep source lists must have equal length: {[len(source) for source in sources]}",
+                declaration.location,
+            )
         for index in range(len(sources[0])):
             local = {}
             for binding, source in zip(declaration.bindings, sources):
                 local[binding.name] = source[index]
-            self._translate_step(declaration.step, local)
+            for step in declaration.steps:
+                if isinstance(step, ExpressionStatement):
+                    self._evaluate(step.expression, local)
+                else:
+                    self._translate_step(step, local)
 
     def _translate_step(self, declaration: Step, local=None) -> None:
         content = self._evaluate(declaration.content, local)
         if content.kind != "list":
-            self._error("step content must be a composite list", declaration.location)
+            self._error("step content must be a composite list", declaration.location, content)
         positions = self._evaluate(declaration.positions, local)
         if positions.kind != "list":
-            self._error("step positions must be a composite list", declaration.location)
+            self._error("step positions must be a composite list", declaration.location, positions)
         content_text = "".join(
             self._format_value(value) for value in self._flatten(content.value)
         )
@@ -155,7 +162,7 @@ class Translator:
         if isinstance(expression, Interval):
             values = [self._evaluate(item, local) for item in (expression.begin, expression.difference, expression.end)]
             if any(item.kind != "number" for item in values):
-                self._error("interval bounds must be numbers", expression.location)
+                self._error("interval bounds must be numbers", expression.location, values)
             return Value("list", self._expand_interval(
                 values[0].value,
                 values[1].value,
@@ -168,8 +175,14 @@ class Translator:
         if isinstance(expression, Equality):
             left, right = self._evaluate(expression.left, local), self._evaluate(expression.right, local)
             if expression.operator == "==":
-                if left.kind not in ("string", "number") or right.kind not in ("string", "number"):
-                    self._error("equality operands must be strings or numbers", expression.location)
+                if (left.kind == "list") != (right.kind == "list"):
+                    result = False
+                elif left.kind not in ("string", "number") or right.kind not in ("string", "number"):
+                    self._error(
+                        "equality operands must be strings or numbers",
+                        expression.location,
+                        (left, right),
+                    )
                 result = (
                     left.value == right.value
                     if left.kind == right.kind == "number"
@@ -177,7 +190,11 @@ class Translator:
                 )
             else:
                 if left.kind != "number" or right.kind != "number":
-                    self._error(f"{expression.operator} operands must be numbers", expression.location)
+                    self._error(
+                        f"{expression.operator} operands must be numbers",
+                        expression.location,
+                        (left, right),
+                    )
                 result = {
                     "<": left.value < right.value,
                     ">": left.value > right.value,
@@ -188,7 +205,7 @@ class Translator:
         if isinstance(expression, Conditional):
             condition = self._evaluate(expression.condition, local)
             if condition.kind != "number":
-                self._error("conditional condition must be a number", expression.condition.location)
+                self._error("conditional condition must be a number", expression.condition.location, condition)
             return self._evaluate(expression.true_branch if condition.value else expression.false_branch, local)
         if isinstance(expression, MacroCall):
             if expression.name in ("go", "look"):
@@ -202,22 +219,30 @@ class Translator:
         list_value = self._evaluate(call.arguments[0][1], local)
         note = self._evaluate(call.arguments[1][1], local)
         if list_value.kind not in ("list", "number"):
-            self._error(f"{call.name} listValue must be a number or list", call.arguments[0][1].location)
+            self._error(
+                f"{call.name} listValue must be a number or list",
+                call.arguments[0][1].location,
+                list_value,
+            )
         if note.kind != "number" or note.value <= 0:
-            self._error(f"{call.name} note must be a positive number", call.arguments[1][1].location)
+            self._error(f"{call.name} note must be a positive number", call.arguments[1][1].location, note)
         self._timing_notes.append(note.value)
         self._timing_location = call.location
         time = self.variables["TIME"]
         if time.kind != "number":
-            self._error("TIME must be a number", call.location)
+            self._error("TIME must be a number", call.location, time)
         note_per_beat = self.variables["NOTE_PER_BEAT"]
         step_per_beat = self.variables["TLSTEP_PER_BEAT"]
         if note_per_beat.kind != "number" or step_per_beat.kind != "number":
-            self._error("NOTE_PER_BEAT and TLSTEP_PER_BEAT must be numbers", call.location)
+            self._error(
+                "NOTE_PER_BEAT and TLSTEP_PER_BEAT must be numbers",
+                call.location,
+                (note_per_beat, step_per_beat),
+            )
         if self._step_mode:
             bpm = self.variables["BPM"]
             if bpm.kind != "number" or bpm.value <= 0:
-                self._error("BPM must be a positive number", call.location)
+                self._error("BPM must be a positive number", call.location, bpm)
             step_per_note = 50 * 60 / bpm.value * note_per_beat.value / note.value
         else:
             step_per_note = step_per_beat.value * note_per_beat.value / note.value
@@ -230,12 +255,16 @@ class Translator:
         values = []
         for value in self._flatten(list_value.value):
             if value.kind != "number":
-                self._error(f"{call.name} listValue must contain numbers", call.arguments[0][1].location)
+                self._error(
+                    f"{call.name} listValue must contain numbers",
+                    call.arguments[0][1].location,
+                    value,
+                )
             values.append(Value("number", time.value + value.value * step_per_note))
         self._non_integer_timing |= any(not self._is_integer(value.value) for value in values)
         if call.name == "go":
             if not values:
-                self._error("next listValue cannot be empty", call.arguments[0][1].location)
+                self._error("go listValue cannot be empty", call.arguments[0][1].location, list_value)
             self.variables["TIME"] = max(values, key=lambda value: value.value)
         return Value("list", values)
 
@@ -276,8 +305,15 @@ class Translator:
             self._macro_stack.pop()
 
     @staticmethod
-    def _error(message: str, location) -> None:
-        raise CompileError(message, location.line, location.column)
+    def _error(message: str, location, element=None) -> None:
+        if isinstance(element, Value):
+            element = f"{element.kind}={element.value!r}"
+        elif isinstance(element, (list, tuple)):
+            element = tuple(
+                f"{item.kind}={item.value!r}" if isinstance(item, Value) else item
+                for item in element
+            )
+        raise CompileError(message, location.line, location.column, element)
 
     def _evaluate_binary(self, expression: BinaryExpression, local: Dict[str, Value]) -> Value:
         left = self._evaluate(expression.left, local)
@@ -293,7 +329,7 @@ class Translator:
     def _apply_unary_value(self, value: Value, operator: str, location) -> Value:
         if operator == "flat":
             if value.kind != "list":
-                self._error("flat requires a list", location)
+                self._error("flat requires a list", location, value)
             return Value("list", self._flatten(value.value))
         if value.kind == "list":
             return Value("list", [
@@ -301,7 +337,7 @@ class Translator:
                 for item in value.value
             ])
         if value.kind != "number":
-            self._error("unary operators require numbers or lists of numbers", location)
+            self._error("unary operators require numbers or lists of numbers", location, value)
         if operator == "+":
             return value
         if operator == "-":
@@ -311,13 +347,17 @@ class Translator:
     def _apply_binary_values(self, left: Value, right: Value, operator: str, location, right_location) -> Value:
         if operator == "rep":
             if left.kind != "list" or right.kind != "number":
-                self._error("rep requires a list and a natural number", location)
+                self._error("rep requires a list and a natural number", location, (left, right))
             if not self._is_integer(right.value) or right.value < 0:
-                self._error("rep count must be a natural number", right_location)
+                self._error("rep count must be a natural number", right_location, right)
             return Value("list", left.value * int(right.value))
         if left.kind == "list" and right.kind == "list":
             if len(left.value) != len(right.value):
-                self._error("arithmetic list operands must have equal length", location)
+                self._error(
+                    "arithmetic list operands must have equal length",
+                    location,
+                    (len(left.value), len(right.value)),
+                )
             return Value("list", [
                 self._apply_binary_values(item_left, item_right, operator, location, right_location)
                 for item_left, item_right in zip(left.value, right.value)
@@ -333,9 +373,13 @@ class Translator:
                 for item in right.value
             ])
         if left.kind != "number" or right.kind != "number":
-            self._error("arithmetic operators require numbers or lists of numbers", location)
+            self._error(
+                "arithmetic operators require numbers or lists of numbers",
+                location,
+                (left, right),
+            )
         if operator in ("/", "div", "mod") and right.value == 0:
-            self._error("division by zero", right_location)
+            self._error("division by zero", right_location, right)
         if operator == "+":
             result = left.value + right.value
         elif operator == "-":
@@ -346,7 +390,7 @@ class Translator:
             result = left.value / right.value
         elif operator in ("div", "mod"):
             if not self._is_integer(left.value) or not self._is_integer(right.value):
-                self._error(f"{operator} requires integer operands", location)
+                self._error(f"{operator} requires integer operands", location, (left, right))
             quotient = int(left.value / right.value)
             result = quotient if operator == "div" else left.value - quotient * right.value
         else:
@@ -355,7 +399,7 @@ class Translator:
 
     def _expand_interval(self, begin, difference, end, include_end, location) -> list[Value]:
         if difference == 0:
-            self._error("interval difference cannot be zero", location)
+            self._error("interval difference cannot be zero", location, difference)
         values = []
         current = begin
         while (current <= end if difference > 0 else current >= end):
@@ -367,7 +411,7 @@ class Translator:
 
     def _moment(self, value: Value, location) -> float:
         if value.kind != "number" or value.value < 0:
-            self._error("step position must evaluate to a non-negative number", location)
+            self._error("step position must evaluate to a non-negative number", location, value)
         return value.value
 
     def _resolve_moments(self, time_scale, confirm) -> Dict[int, list[str]]:
@@ -379,7 +423,11 @@ class Translator:
             raise ValueError("unsupported time scale strategy")
         if not self._non_integer_timing:
             if any(not self._is_integer(moment) for moment in self.timeline):
-                self._error("step position must evaluate to an integer", self._timing_location)
+                self._error(
+                    "step position must evaluate to an integer",
+                    self._timing_location,
+                    tuple(self.timeline),
+                )
             timeline = {int(moment): values for moment, values in self.timeline.items()}
             self.output_source = self._format_step_source(timeline)
             return timeline

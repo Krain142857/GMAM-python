@@ -1,6 +1,9 @@
 from pathlib import Path
+from io import StringIO
+import re
 from typing import Callable, Iterable, Optional, TextIO
 from xml.sax.saxutils import escape
+from xml.etree import ElementTree
 
 from .ast import Program
 from .parser import Parser
@@ -69,6 +72,21 @@ class Compiler:
             Compiler.write_step(timeline, output)
             return
         raise ValueError(f"unsupported output format: {format}")
+
+    @staticmethod
+    def write_output(
+        timeline: dict[int, list[str]],
+        output: TextIO,
+        file_format: str = "gms",
+        output_type: str = "timeline",
+    ) -> None:
+        if output_type == "timeline":
+            Compiler.write_timeline(timeline, output, file_format)
+            return
+        if output_type == "step" and file_format == "gm82":
+            Compiler.write_step(timeline, output)
+            return
+        raise ValueError("gms + step requires an output file for GMX injection")
         
 
     @staticmethod
@@ -125,7 +143,7 @@ class Compiler:
     @staticmethod
     def write_step(timeline: dict[int, list[str]], output: TextIO) -> None:
         """Write a plain-text step event switch."""
-        output.write("step+=1;\n")
+        output.write("step = step + 1;\n")
         output.write("switch (step) {\n")
         for moment in sorted(timeline):
             output.write(f"    case {moment}:\n")
@@ -136,3 +154,157 @@ class Compiler:
                     output.write("\n")
             output.write("      break;\n")
         output.write("}\n")
+
+    @staticmethod
+    def inject_gms_step(timeline: dict[int, list[str]], filename: str) -> None:
+        """Insert or replace the generated Step event in a GameMaker object GMX."""
+        step_output = StringIO()
+        Compiler.write_step(timeline, step_output)
+        code = "///GMAM GENERATED\n" + step_output.getvalue()
+        event = Compiler._gms_step_event(code)
+        path = Path(filename)
+        if path.exists():
+            source = path.read_text(encoding="utf-8")
+            matches = list(re.finditer(
+                r"<event\b(?=[^>]*\beventtype=\"3\")(?=[^>]*\benumb=\"0\")[^>]*>.*?</event>",
+                source,
+                re.DOTALL,
+            ))
+            replacement = None
+            for match in matches:
+                block = match.group(0)
+                for action_match in re.finditer(r"<action\b.*?</action>", block, re.DOTALL):
+                    action = action_match.group(0)
+                    code_match = re.search(r"<string>(.*?)</string>", action, re.DOTALL)
+                    code_element = ElementTree.fromstring(
+                        f"<string>{code_match.group(1)}</string>"
+                    ) if code_match else None
+                    existing_code = (code_element.text or "") if code_element is not None else ""
+                    if existing_code.splitlines() and "GMAM GENERATED" in existing_code.splitlines()[0]:
+                        replacement = (
+                            match.start() + action_match.start(),
+                            match.start() + action_match.end(),
+                        )
+                        break
+                if replacement is not None:
+                    break
+            if replacement is not None:
+                start, end = replacement
+                source = source[:start] + Compiler._gms_step_action(code) + source[end:]
+            elif matches:
+                event_match = matches[0]
+                insertion = event_match.end() - len("</event>")
+                source = source[:insertion] + Compiler._gms_step_action(code) + source[insertion:]
+            else:
+                insertion = Compiler._gms_event_insertion_point(source, 3)
+                if insertion is not None:
+                    source = source[:insertion] + event + source[insertion:]
+                else:
+                    marker = "</events>"
+                    if marker not in source:
+                        raise ValueError("output GMX does not contain an <events> element")
+                    source = source.replace(marker, f"{event}  {marker}", 1)
+        else:
+            source = f"<object>\n  <events>\n{event}  </events>\n</object>\n"
+        try:
+            ElementTree.fromstring(source)
+        except ElementTree.ParseError as error:
+            raise ValueError(f"invalid GMX output: {error}") from error
+        path.write_text(source, encoding="utf-8")
+
+    @staticmethod
+    def inject_gm82_step(timeline: dict[int, list[str]], filename: str) -> None:
+        """Insert or replace the generated Step action in a GM82 object file."""
+        step_output = StringIO()
+        Compiler.write_step(timeline, step_output)
+        code = "///GMAM GENERATED\n" + step_output.getvalue()
+        action = Compiler._gm82_step_action(code)
+        path = Path(filename)
+        source = path.read_text(encoding="utf-8") if path.exists() else ""
+        step_match = re.search(
+            r"(?ms)^#define\s+Step_0\b[^\n]*\n.*?(?=^#define\b|\Z)",
+            source,
+        )
+        if step_match:
+            block = step_match.group(0)
+            action_pattern = re.compile(
+                re.escape("/*\"/*'/**//* YYD ACTION") + r".*?(?=" +
+                re.escape("/*\"/*'/**//* YYD ACTION") + r"|\Z)",
+                re.DOTALL,
+            )
+            replacement = None
+            for action_match in action_pattern.finditer(block):
+                action_text = action_match.group(0)
+                header_end = action_text.find("*/\n", len("/*\"/*'/**//* YYD ACTION"))
+                existing_code = action_text[header_end + 3:].lstrip() if header_end >= 0 else ""
+                if existing_code.splitlines() and "GMAM GENERATED" in existing_code.splitlines()[0]:
+                    replacement = (action_match.start(), action_match.end())
+                    break
+            if replacement is not None:
+                start, end = replacement
+                block = block[:start] + action + block[end:]
+            else:
+                block = block.rstrip() + "\n" + action
+            source = source[:step_match.start()] + block + source[step_match.end():]
+        else:
+            addition = "#define Step_0\n" + action
+            source = source.rstrip() + ("\n" if source else "") + addition
+        path.write_text(source, encoding="utf-8")
+
+    @staticmethod
+    def _gms_step_event(code: str) -> str:
+        return (
+            "    <event eventtype=\"3\" enumb=\"0\">\n"
+            + Compiler._gms_step_action(code)
+            + "    </event>\n"
+        )
+
+    @staticmethod
+    def _gms_step_action(code: str) -> str:
+        return (
+            "      <action>\n"
+            "        <libid>1</libid>\n"
+            "        <id>603</id>\n"
+            "        <kind>7</kind>\n"
+            "        <userelative>0</userelative>\n"
+            "        <isquestion>0</isquestion>\n"
+            "        <useapplyto>-1</useapplyto>\n"
+            "        <exetype>2</exetype>\n"
+            "        <functionname></functionname>\n"
+            "        <codestring></codestring>\n"
+            "        <whoName>self</whoName>\n"
+            "        <relative>0</relative>\n"
+            "        <isnot>0</isnot>\n"
+            "        <arguments>\n"
+            "          <argument>\n"
+            "            <kind>1</kind>\n"
+            "            <string>"
+            + escape(code)
+            + "</string>\n"
+            "          </argument>\n"
+            "        </arguments>\n"
+            "      </action>\n"
+        )
+
+    @staticmethod
+    def _gm82_step_action(code: str) -> str:
+        return (
+            "/*\"/*'/**//* YYD ACTION\n"
+            "lib_id=1\n"
+            "action_id=603\n"
+            "applies_to=self\n"
+            "*/\n"
+            + code
+            + ("" if code.endswith("\n") else "\n")
+        )
+
+    @staticmethod
+    def _gms_event_insertion_point(source: str, eventtype: int) -> Optional[int]:
+        """Return the position before the first later event type."""
+        event_pattern = re.compile(
+            r"<event\b(?=[^>]*\beventtype=\"(\d+)\")[^>]*>"
+        )
+        for match in event_pattern.finditer(source):
+            if int(match.group(1)) > eventtype:
+                return match.start()
+        return None

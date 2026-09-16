@@ -100,7 +100,7 @@ look(4, 16);
 因此 `go(0:1:2, 16)` 返回 `{TIME, TIME + 2}`，并将 `TIME` 更新为
 结果列表的最大值。`listValue` 必须是数字或数字列表，`note` 必须是正数。
 
-使用 `--format step` 输出每秒执行 50 次的 step event 时，`go/look` 使用
+使用 `--output-type step` 输出每秒执行 50 次的 step event 时，`go/look` 使用
 实际时间计算 moment：
 
 ```text
@@ -146,6 +146,13 @@ TLSTEP_PER_BEAT = 3;
 
 ```text
 def start = 0
+def name = `player`
+```
+
+`def` 声明末尾的分号可写可不写：
+
+```text
+def start = 0;
 def name = `player`
 ```
 
@@ -242,7 +249,8 @@ x >= 10
 `yes` == `yes`
 ```
 
-`==` 支持数字和字符串；`<`、`>`、`<=`、`>=` 只支持数字。
+`==` 支持数字和字符串。列表值与非列表值使用 `==` 时返回 `0`；
+列表与列表比较仍不支持。`<`、`>`、`<=`、`>=` 只支持数字。
 
 条件表达式格式为：
 
@@ -278,17 +286,41 @@ for (x in 0:20:60, y in {10, 20, 30, 40}) do {x, y}
 `forstep` 只能写在文件最外层，用于遍历列表并生成多个 Step：
 
 ```text
-forstep (x in {0, 1, 2}) do [x] {`tick();`};
+forstep (x in {0, 1}) do {
+    [x] {`tick();`};
+}
 ```
 
-也可以交换 Step 的两个部分：
+`do` 后必须使用花括号包围 Step 块，块内可以包含一个或多个 Step。
+两种 Step 部分顺序都支持：
 
 ```text
-forstep (x in {0, 1, 2}) do {`tick();`} [x];
+forstep (x in {0, 1}) do {
+    {`first();`} [x];
+    [x + 1] {`second();`};
+}
 ```
 
-多个来源会按位置配对，长度必须一致。绑定变量只在后面的 Step 内有效；
-来源表达式在外部作用域中计算。
+块内也可以写表达式语句，表达式会在每次迭代的局部绑定环境中求值，
+但不会直接生成 Step：
+
+```text
+forstep (x in {0, 1}) do {
+    x = x + 10;
+    [x] {`tick();`};
+}
+```
+
+多个来源会按位置配对，长度必须一致。绑定变量在块内所有 Step 中有效；
+来源表达式在外部作用域中计算。块结束后，后续普通 Step 不属于
+`forstep`：
+
+```text
+forstep (x in {0, 1}) do {
+    [x] {`loop();`};
+}
+[99] {`normal();`};
+```
 
 ## 9. 算术运算
 

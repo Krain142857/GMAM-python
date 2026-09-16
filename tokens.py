@@ -42,12 +42,13 @@ class Lexer:
         raise CompileError(message, self.line, self.column)
 
     def _advance(self, text: str) -> None:
-        lines = text.splitlines(True)
-        if len(lines) == 1:
+        last_newline = max(text.rfind("\n"), text.rfind("\r"))
+        if last_newline < 0:
             self.column += len(text)
         else:
-            self.line += len(lines) - 1
-            self.column = len(lines[-1].rstrip("\r\n")) + 1
+            line_breaks = text.count("\n") + text.count("\r") - text.count("\r\n")
+            self.line += line_breaks
+            self.column = len(text[last_newline + 1:]) + 1
         self.index += len(text)
 
     def tokens(self) -> List[Token]:

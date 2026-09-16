@@ -22,21 +22,44 @@ python -m gmam 输入文件.tl -o 输出文件 --format gms
 ## 命令行参数
 
 ```text
-python -m gmam INPUTS... [-o OUTPUT] [-f {gms,gm82,step}] [--time-scale {ask,adjust,round}]
+python -m gmam INPUTS... [-o OUTPUT] [-f {gms,gm82}] [--output-type {timeline,step}] [--time-scale {ask,adjust,round}]
 ```
 
 - `INPUTS...`：一个或多个 `.tl` 输入文件。多个文件会按命令行顺序合并编译。
 - `-o`、`--output`：输出文件路径。不填写时写到标准输出。
-- `-f`、`--format`：输出格式：
-  - `gms`：GameMaker Studio 时间轴 XML，默认值；
-  - `gm82`：GameMaker 8.2 的 GML/YYD ACTION 格式；
-  - `step`：每帧执行一次的纯文本 `step`/`switch` 代码。
+- `-f`、`--format`：文件格式：
+  - `gms`：GameMaker Studio XML；
+  - `gm82`：GameMaker 8.2 的 GML/YYD ACTION 格式。
+- `--output-type`：输出内容类型：
+  - `timeline`：输出原来的 timeline；
+  - `step`：输出每帧执行一次的 `step`/`switch` 代码。
+- 旧用法 `--format step` 仍可用，等价于 `--format gm82 --output-type step`。
+
+四种组合为 `gms/timeline`、`gms/step`、`gm82/timeline` 和
+`gm82/step`。其中 `gms/step` 需要通过 `-o` 指定 GMX 文件，并将带有
+`///GMAM GENERATED` 标记的代码注入或替换到 `eventtype=3, enumb=0`。
+例如：
+
+```powershell
+python -m gmam input\avoidance.tl -o objects\objAvoid.object.gmx `
+    --format gms --output-type step
+```
+
+如果目标文件已有第一行包含 `GMAM GENERATED` 的 action，则只替换该
+action，不会删除同一 event 下的其他 action；如果对应 event 存在但没有
+标记 action，则向该 event 追加 action。没有对应 event 时才新增 event。
+目标文件不存在时会创建可读取的最小 GMX 对象文件。
+
+`gm82/step` 需要通过 `-o` 指定 GM82 object 文件，将带有
+`///GMAM GENERATED` 标记的 action 注入或替换到 `Step_0`。已有
+`Step_0` 时只追加或替换 action，不会破坏该事件的其他 action；没有
+`Step_0` 时才新增该事件。
 - `--time-scale`：处理非整数 moment：
   - `ask`：检测到 `go/look` 产生非整数时间时询问用户，默认值；
   - `adjust`：自动调整 `TLSTEP_PER_BEAT` 并整体放缩 moment；
   - `round`：对非整数 moment 四舍五入。
 
-使用 `--format step` 时，`--time-scale` 会被忽略。`go/look` 的时间按照每秒
+使用 `--output-type step` 时，`--time-scale` 会被忽略。`go/look` 的时间按照每秒
 50 次 step event 计算：
 
 ```text
@@ -90,8 +113,7 @@ with open("test.timeline.gmx", "w", encoding="utf-8") as output:
     Compiler.write_timeline(timeline, output, format="gms")
 ```
 
-`format` 可选 `gms`、`gm82` 或 `step`。使用 `step` 时请在编译 API 中传入
-`output_format="step"`，再使用 `Compiler.write_timeline(..., format="step")`。
+`format` 可选 `gms` 或 `gm82`，`output_type` 可选 `timeline` 或 `step`。
 编译后的 Step 文本也可通过 `Compiler.write_output_source()` 写入。
 
 ## 相关文档

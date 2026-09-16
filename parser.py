@@ -23,7 +23,8 @@ class Parser:
 
     def _error(self, message: str, token: Optional[Token] = None) -> None:
         token = token or self.current
-        raise CompileError(message, token.location.line, token.location.column)
+        element = f"{token.kind}={token.value!r}"
+        raise CompileError(message, token.location.line, token.location.column, element)
 
     def _accept(self, kind: str) -> Optional[Token]:
         if self.current.kind == kind:
@@ -43,6 +44,7 @@ class Parser:
         while self.current.kind != "END":
             if self.current.kind == "DEF":
                 declarations.append(self._definition())
+                self._accept("SEMICOLON")
             elif self.current.kind == "FORSTEP":
                 declarations.append(self._forstep())
             elif self.current.kind == "LBRACE":
@@ -72,7 +74,20 @@ class Parser:
                 break
         self._expect("RPAREN")
         self._expect("DO")
-        return ForStep(bindings, self._step(), start.location)
+        self._expect("LBRACE")
+        steps = []
+        while self.current.kind != "RBRACE":
+            if self.current.kind in ("LBRACK", "LBRACE"):
+                steps.append(self._brace_top_level() if self.current.kind == "LBRACE" else self._step())
+            else:
+                expression = self._expr()
+                self._expect("SEMICOLON")
+                steps.append(ExpressionStatement(expression, expression.location))
+        if not steps:
+            self._error("forstep block must contain at least one step")
+        self._expect("RBRACE")
+        self._accept("SEMICOLON")
+        return ForStep(bindings, steps, start.location)
 
     def _brace_top_level(self):
         start = self._expect("LBRACE")

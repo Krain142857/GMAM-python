@@ -127,7 +127,7 @@ class Step:
 @dataclass
 class ForStep:
     bindings: List[ForBinding]
-    step: Step
+    steps: List[object]
     location: Location
 
 
