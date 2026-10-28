@@ -313,7 +313,7 @@ class Translator:
                 f"{item.kind}={item.value!r}" if isinstance(item, Value) else item
                 for item in element
             )
-        raise CompileError(message, location.line, location.column, element)
+        raise CompileError(message, location.line, location.column, element, filename=location.filename)
 
     def _evaluate_binary(self, expression: BinaryExpression, local: Dict[str, Value]) -> Value:
         left = self._evaluate(expression.left, local)

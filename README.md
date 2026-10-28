@@ -1,121 +1,163 @@
 # GMAM Python 编译器
 
-GMAM Python 是一个将 GMAM 时间轴源文件（`.tl`）翻译为 GameMaker
-时间轴文件的 Python 编译器。它包含词法分析、语法分析、表达式求值和
-两种时间轴输出格式，以及一种每帧执行的 step 事件格式。
-
-除普通 Step 外，语言还支持顶层 `forstep` 语句，可遍历列表批量生成
-多个 Step。具体语法请参阅 [RULES.md](RULES.md)。
+GMAM Python 是一个将 GMAM 源文件（`.tl`）编译为 GameMaker 时间轴相关输出的
+Python 编译器。
 
 ## 运行环境
 
 - Python 3.9 或更高版本
-- 仅使用 Python 标准库，不需要安装第三方包
 - Windows、Linux 和 macOS 均可运行
+- 当前核心编译库仅依赖 Python 标准库
 
-在项目根目录（包含 `gmam` 文件夹的目录）运行：
+GMAM 当前源码不需要安装第三方包；直接使用系统 Python 即可运行命令行和
+作为库导入。
+
+如果你只是把 `gmam` 当作一个 Python 包在自己的脚本中调用，通常不需要额外
+准备虚拟环境之外的任何依赖。
+
+在项目根目录（包含 `gmam` 文件夹的目录）执行：
 
 ```powershell
-python -m gmam 输入文件.tl -o 输出文件 --format gms
+python -m gmam input\test.tl -o output\test.timeline.gmx
+python -m gmam.__main_gui___
 ```
 
-## 命令行参数
+## 命令行接口
 
 ```text
-python -m gmam INPUTS... [-o OUTPUT] [-f {gms,gm82}] [--output-type {timeline,step}] [--time-scale {ask,adjust,round}]
+python -m gmam INPUTS... [-o OUTPUT] [-f {gms,gm82}] [--output-type {timeline,step,txt}] [--time-scale {ask,adjust,round}]
 ```
 
-- `INPUTS...`：一个或多个 `.tl` 输入文件。多个文件会按命令行顺序合并编译。
-- `-o`、`--output`：输出文件路径。不填写时写到标准输出。
-- `-f`、`--format`：文件格式：
+参数说明：
+
+- `INPUTS...`：一个或多个 `.tl` 输入文件，按命令行顺序合并编译。
+- `-o`、`--output`：输出文件路径；省略时写到标准输出。
+- `-f`、`--format`：timeline 或 step 输出所使用的目标格式：
   - `gms`：GameMaker Studio XML；
-  - `gm82`：GameMaker 8.2 的 GML/YYD ACTION 格式。
-- `--output-type`：输出内容类型：
-  - `timeline`：输出原来的 timeline；
-  - `step`：输出每帧执行一次的 `step`/`switch` 代码。
-- 旧用法 `--format step` 仍可用，等价于 `--format gm82 --output-type step`。
+  - `gm82`：GameMaker 8.2 的 GML / YYD ACTION 文本。
+- `--output-type`：输出模式：
+  - `timeline`：输出 timeline；
+  - `step`：输出 Step 事件内容；
+  - `txt`：输出纯文本 Step 代码。
+- `--time-scale`：处理非整数 moment 的策略：
+  - `ask`：发现非整数时间时询问；
+  - `adjust`：自动调整 `TLSTEP_PER_BEAT` 并整体放缩；
+  - `round`：直接四舍五入。
 
-四种组合为 `gms/timeline`、`gms/step`、`gm82/timeline` 和
-`gm82/step`。其中 `gms/step` 需要通过 `-o` 指定 GMX 文件，并将带有
-`///GMAM GENERATED` 标记的代码注入或替换到 `eventtype=3, enumb=0`。
-例如：
+### 输出模式与格式的关系
 
-```powershell
-python -m gmam input\avoidance.tl -o objects\objAvoid.object.gmx `
-    --format gms --output-type step
-```
+`format` 与 `output-type` 组合行为如下：
 
-如果目标文件已有第一行包含 `GMAM GENERATED` 的 action，则只替换该
-action，不会删除同一 event 下的其他 action；如果对应 event 存在但没有
-标记 action，则向该 event 追加 action。没有对应 event 时才新增 event。
-目标文件不存在时会创建可读取的最小 GMX 对象文件。
+- `gms + timeline`：输出 GMS timeline XML；
+- `gm82 + timeline`：输出 GM82 timeline 文本；
+- `gms + step`：向 GMX 对象文件注入或替换 Step 事件；
+- `gm82 + step`：向 GM82 object 文件注入或替换 `Step_0`；
+- `txt`：忽略 `format`，直接输出纯文本 Step 代码。
 
-`gm82/step` 需要通过 `-o` 指定 GM82 object 文件，将带有
-`///GMAM GENERATED` 标记的 action 注入或替换到 `Step_0`。已有
-`Step_0` 时只追加或替换 action，不会破坏该事件的其他 action；没有
-`Step_0` 时才新增该事件。
-- `--time-scale`：处理非整数 moment：
-  - `ask`：检测到 `go/look` 产生非整数时间时询问用户，默认值；
-  - `adjust`：自动调整 `TLSTEP_PER_BEAT` 并整体放缩 moment；
-  - `round`：对非整数 moment 四舍五入。
+### step 注入规则
 
-使用 `--output-type step` 时，`--time-scale` 会被忽略。`go/look` 的时间按照每秒
-50 次 step event 计算：
+`gms + step` 需要 `-o` 指向 GMX 对象文件。生成代码会带有
+`///GMAM GENERATED` 标记，并注入到 `eventtype=3, enumb=0`。
 
-```text
-每个 note 对应的 moment = 50 * 60 / BPM * NOTE_PER_BEAT / note
-```
+- 若已有带该标记的 action，则替换该 action；
+- 若已有 Step 事件但没有该标记，则只追加 action；
+- 若没有 Step 事件，则新增事件；
+- 若目标文件不存在，则自动创建最小可用 GMX 对象文件。
 
-计算过程保留小数，只在最终输出 moment 时四舍五入；因此不会询问调整、
-生成 scaled 源文件，也不会因为小数 moment 报错。
+`gm82 + step` 需要 `-o` 指向 GM82 object 文件，并将带有
+`///GMAM GENERATED` 标记的 action 注入或替换到 `Step_0`。
 
-`ask` 模式会给出两个推荐值。第一个是
-`lcm(所有 note) / NOTE_PER_BEAT`，第二个是第一个推荐值乘以原
-`TLSTEP_PER_BEAT`。如果手动输入过具体时间，可以考虑第二个值。确认调整
-后，目标值输入为空时使用第一个推荐值。
+- 若已有带该标记的 action，则替换该 action；
+- 若已有 `Step_0` 但没有该标记，则只追加 action；
+- 若没有 `Step_0`，则新增该事件。
 
-如果实际采用了 `adjust`（包括 `ask` 中确认调整），命令行还会在第一个
-输入文件旁生成 `<原名>.scaled.tl`。该文件第一行设置选定的
-`TLSTEP_PER_BEAT`，之后写入已经完成时间计算和放缩的 Step。未调整或使用
-`round` 时不会生成该文件。
 
-无论使用哪种输出格式或时间缩放策略，命令行都会在最后一个输入文件旁生成
-`<原名>.out`。该文件只包含所有已经展开、计算并完成最终 moment 处理的
-Step，格式为：
-
-```text
-[0, 1, 2] {`计算后的内容`};
-```
-
-示例：
+### 示例
 
 ```powershell
-# 输出 GMS 时间轴 XML
+# 输出 GMS timeline XML
 python -m gmam input\test.tl -o output\test.timeline.gmx
 
-# 输出 GM 8.2 格式
-python -m gmam input\test.tl -o output\test.gml --format gm82
+# 输出 GM82 timeline 文本
+python -m gmam input\test.tl -o output\test.timeline.gm82 --format gm82
 
-# 编译多个文件并输出到标准输出
+# 注入 GMS Step 事件
+python -m gmam input\avoidance.tl -o objects\objAvoid.object.gmx --format gms --output-type step
+
+# 输出纯文本 Step 代码
+python -m gmam input\test.tl --output-type txt
+
+# 合并多个输入文件
 python -m gmam input\define.tl input\avoidance.tl --format gms
 ```
 
-编译失败时，程序会在错误输出中显示行号和列号，并返回退出码 `1`。
+### 错误处理
+
+编译失败时返回退出码 `1`，并在标准错误输出中打印诊断信息。
+诊断信息包含：
+
+- 文件名（多文件输入时为实际出错文件）；
+- 行号；
+- 列号；
+- 错误消息。
 
 ## Python API
+
+### 基本编译
 
 ```python
 from gmam import Compiler
 
-timeline = Compiler().compile_files(["input/test.tl"], time_scale="round")
+compiler = Compiler()
+timeline = compiler.compile_files(["input/test.tl"], time_scale="round")
 
 with open("test.timeline.gmx", "w", encoding="utf-8") as output:
-    Compiler.write_timeline(timeline, output, format="gms")
+    Compiler.write_output(timeline, output, "gms", "timeline")
 ```
 
-`format` 可选 `gms` 或 `gm82`，`output_type` 可选 `timeline` 或 `step`。
-编译后的 Step 文本也可通过 `Compiler.write_output_source()` 写入。
+### 输出纯文本 Step 代码
 
-## 相关文档
+```python
+from gmam import Compiler
+from io import StringIO
 
-- [RULES.md](RULES.md)：当前支持的主要语法规则和示例。
+compiler = Compiler()
+timeline = compiler.compile_files(["input/test.tl"], output_format="txt")
+
+stream = StringIO()
+Compiler.write_output(timeline, stream, "gms", "txt")
+print(stream.getvalue())
+```
+
+### 访问附加产物
+
+```python
+from gmam import Compiler
+
+compiler = Compiler()
+compiler.compile_files(["input/test.tl"], time_scale="adjust")
+
+print(compiler.output_source)
+print(compiler.scaled_source)
+```
+
+说明：
+
+- `compile_files()` 负责读取文件并编译；
+- `compile_sources()` 可直接接收源码字符串与文件名；
+- `write_output()` 根据 `format` 和 `output_type` 输出最终结果；
+- `write_output_source()` 可写出 `.out` 对应内容；
+- `write_scaled_source()` 可写出 `.scaled.tl` 对应内容。
+
+## 作者
+
+Krain
+
+## 开源协议
+
+本项目采用 **MIT License** 开源。
+
+你可以在遵守 MIT License 条款的前提下使用、复制、修改、合并、发布、分发、
+再授权和销售本项目的软件副本。
+
+建议在项目根目录提供对应的 `LICENSE` 文件，以便与 README 中的协议说明保持一致。

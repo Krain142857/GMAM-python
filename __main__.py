@@ -2,8 +2,8 @@ import argparse
 import sys
 from pathlib import Path
 
-from .compiler import Compiler
-from .errors import CompileError
+from gmam.compiler import Compiler
+from gmam.errors import CompileError
 
 
 def main() -> int:
@@ -12,15 +12,15 @@ def main() -> int:
     parser.add_argument("-o", "--output", help="output timeline XML (defaults to stdout)")
     parser.add_argument(
         "-f", "--format",
-        choices=("gms", "gm82", "step"),
+        choices=("gms", "gm82"),
         default="gms",
-        help="file format: gms or gm82; legacy step means gm82 + step (default: gms)",
+        help="file format: gms or gm82 (default: gms)",
     )
     parser.add_argument(
         "--output-type",
-        choices=("timeline", "step"),
+        choices=("timeline", "step", "txt"),
         default="timeline",
-        help="output content: timeline or step (default: timeline)",
+        help="output content: timeline, step, or txt (default: timeline)",
     )
     parser.add_argument(
         "--time-scale",
@@ -30,8 +30,8 @@ def main() -> int:
     )
     args = parser.parse_args()
     try:
-        file_format = "gm82" if args.format == "step" else args.format
-        output_type = "step" if args.format == "step" else args.output_type
+        file_format = args.format
+        output_type = args.output_type
         compiler = Compiler()
         timeline = compiler.compile_files(
             args.inputs,
@@ -49,16 +49,9 @@ def main() -> int:
                 compiler.write_scaled_source(stream)
             print(f"已生成放缩后的源文件：{scaled_path}", file=sys.stderr)
         if args.output:
-            if file_format == "gms" and output_type == "step":
-                Compiler.inject_gms_step(timeline, args.output)
-            elif file_format == "gm82" and output_type == "step":
-                Compiler.inject_gm82_step(timeline, args.output)
-            else:
-                with open(args.output, "w", encoding="utf-8", newline="\n") as stream:
-                    Compiler.write_output(timeline, stream, file_format, output_type)
+            with open(args.output, "w", encoding="utf-8", newline="\n") as stream:
+                Compiler.write_output(timeline, stream, file_format, output_type)
         else:
-            if file_format == "gms" and output_type == "step":
-                raise ValueError("gms + step requires -o/--output for GMX injection")
             Compiler.write_output(timeline, sys.stdout, file_format, output_type)
     except (CompileError, ValueError) as error:
         print(error, file=sys.stderr)

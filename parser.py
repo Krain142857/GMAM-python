@@ -13,8 +13,8 @@ from .tokens import Lexer, Token
 
 
 class Parser:
-    def __init__(self, source: str):
-        self.tokens = Lexer(source).tokens()
+    def __init__(self, source: str, filename: Optional[str] = None):
+        self.tokens = Lexer(source, filename=filename).tokens()
         self.index = 0
 
     @property
@@ -24,7 +24,13 @@ class Parser:
     def _error(self, message: str, token: Optional[Token] = None) -> None:
         token = token or self.current
         element = f"{token.kind}={token.value!r}"
-        raise CompileError(message, token.location.line, token.location.column, element)
+        raise CompileError(
+            message,
+            token.location.line,
+            token.location.column,
+            element,
+            filename=token.location.filename,
+        )
 
     def _accept(self, kind: str) -> Optional[Token]:
         if self.current.kind == kind:

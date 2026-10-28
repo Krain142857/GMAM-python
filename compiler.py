@@ -24,15 +24,15 @@ class Compiler:
         self.output_source = None
         translator = Translator()
         declarations = []
-        for source in sources:
-            declarations.extend(Parser(source).parse().declarations)
-        if output_format not in ("timeline", "step"):
+        for source, filename in sources:
+            declarations.extend(Parser(source, filename=filename).parse().declarations)
+        if output_format not in ("timeline", "step", "txt"):
             raise ValueError(f"unsupported output format: {output_format}")
         timeline = translator.translate(
             Program(declarations),
             time_scale,
             confirm,
-            step_mode=output_format == "step",
+            step_mode=output_format in {"step", "txt"},
         )
         self.scaled_source = translator.scaled_source
         self.output_source = translator.output_source
@@ -46,7 +46,10 @@ class Compiler:
         output_format: str = "timeline",
     ) -> dict[int, list[str]]:
         return self.compile_sources(
-            (Path(filename).read_text(encoding="utf-8") for filename in filenames),
+            (
+                (Path(filename).read_text(encoding="utf-8"), str(Path(filename)))
+                for filename in filenames
+            ),
             time_scale,
             confirm,
             output_format,
@@ -68,9 +71,6 @@ class Compiler:
         if format == "gms":
             Compiler.write_gms(timeline, output)
             return
-        if format == "step":
-            Compiler.write_step(timeline, output)
-            return
         raise ValueError(f"unsupported output format: {format}")
 
     @staticmethod
@@ -80,13 +80,16 @@ class Compiler:
         file_format: str = "gms",
         output_type: str = "timeline",
     ) -> None:
+        if output_type == "txt":
+            Compiler.write_step(timeline, output)
+            return
         if output_type == "timeline":
             Compiler.write_timeline(timeline, output, file_format)
             return
-        if output_type == "step" and file_format == "gm82":
+        if output_type == "step":
             Compiler.write_step(timeline, output)
             return
-        raise ValueError("gms + step requires an output file for GMX injection")
+        raise ValueError(f"unsupported output type: {output_type}")
         
 
     @staticmethod

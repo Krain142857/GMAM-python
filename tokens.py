@@ -1,7 +1,7 @@
 """Location-aware lexer for the GMAM language."""
 
 from dataclasses import dataclass
-from typing import List
+from typing import List, Optional
 
 from .errors import CompileError
 
@@ -10,6 +10,7 @@ from .errors import CompileError
 class Location:
     line: int
     column: int
+    filename: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -32,14 +33,15 @@ class Lexer:
         "do": "DO",
     }
 
-    def __init__(self, source: str):
+    def __init__(self, source: str, filename: Optional[str] = None):
         self.source = source
+        self.filename = filename
         self.index = 0
         self.line = 1
         self.column = 1
 
     def _error(self, message: str) -> None:
-        raise CompileError(message, self.line, self.column)
+        raise CompileError(message, self.line, self.column, filename=self.filename)
 
     def _advance(self, text: str) -> None:
         last_newline = max(text.rfind("\n"), text.rfind("\r"))
@@ -56,7 +58,7 @@ class Lexer:
         if self.source.startswith("\ufeff"):
             self._advance("\ufeff")
         while self.index < len(self.source):
-            start = Location(self.line, self.column)
+            start = Location(self.line, self.column, self.filename)
             rest = self.source[self.index:]
             if rest[0] in " \t":
                 self._advance(rest[0])
@@ -134,5 +136,5 @@ class Lexer:
                 result.append(Token(kind, rest[0], start))
                 continue
             self._error(f"unexpected character {rest[0]!r}")
-        result.append(Token("END", None, Location(self.line, self.column)))
+        result.append(Token("END", None, Location(self.line, self.column, self.filename)))
         return result
